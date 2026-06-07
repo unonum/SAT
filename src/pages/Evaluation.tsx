@@ -11,8 +11,11 @@ import { relativeDate } from '@/lib/utils';
 import {
   ClipboardCheck, Clock, ListChecks, Play, TrendingUp, History,
   Database, Trophy, ArrowLeft, Target, Rocket, CheckCircle2, Lock,
+  ShieldCheck,
 } from 'lucide-react';
 import type { Question } from '@/lib/types';
+import { computeTopicMastery } from '@/lib/adaptive';
+import { TOPICS } from '@/lib/topics';
 
 export default function Evaluation() {
   const attempts = useStore((s) => s.attempts);
@@ -151,12 +154,16 @@ export default function Evaluation() {
                   </div>
                 )}
 
-                <button
-                  className="btn-primary w-full py-2.5"
-                  onClick={() => setActive({ def, questions: buildEvalTest(def.id) })}
-                >
-                  <Play size={16} /> {taken ? 'Retake test' : 'Start evaluation'}
-                </button>
+                {taken ? (
+                  <LockedResults attempts={attempts} def={def} summary={summary} />
+                ) : (
+                  <button
+                    className="btn-primary w-full py-2.5"
+                    onClick={() => setActive({ def, questions: buildEvalTest(def.id) })}
+                  >
+                    <Play size={16} /> Start evaluation
+                  </button>
+                )}
               </Card>
             </motion.div>
           );
@@ -165,6 +172,71 @@ export default function Evaluation() {
 
       {/* History across all evaluations */}
       <EvalHistory />
+    </div>
+  );
+}
+
+function LockedResults({
+  attempts,
+  def,
+  summary,
+}: {
+  attempts: import('@/lib/types').Attempt[];
+  def: EvalTestDef;
+  summary: ReturnType<typeof evalSummary>;
+}) {
+  const session = summary.lastSession;
+  // Per-topic mastery from evaluation attempts only
+  const evalAttempts = attempts.filter((a) => a.mode === def.mode);
+  const topicMasteries = TOPICS.map((t) => ({
+    ...computeTopicMastery(t.id, evalAttempts),
+    name: t.name,
+  }));
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 p-3 text-sm">
+        <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-400 mb-1">
+          <ShieldCheck size={16} /> Benchmark locked — yardstick only
+        </div>
+        <p className="text-amber-700/80 dark:text-amber-400/80 text-xs">
+          These scores are your permanent baseline. Only practice &amp; mock tests improve your dashboard.
+        </p>
+      </div>
+
+      {session && (
+        <div className="rounded-xl border surface p-3 text-sm space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-muted text-xs">Score</span>
+            <span className="font-display text-xl font-extrabold">{session.score}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted text-xs">Accuracy</span>
+            <span className="font-semibold">{session.accuracy}%</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted text-xs">Taken</span>
+            <span className="text-muted text-xs">{relativeDate(session.finishedAt)}</span>
+          </div>
+          <div className="border-t border-[rgb(var(--border))] pt-2">
+            <div className="text-xs font-semibold text-muted mb-1.5">Per-topic mastery</div>
+            <div className="space-y-1">
+              {topicMasteries.filter((tm) => tm.attempts > 0).map((tm) => (
+                <div key={tm.topic} className="flex items-center gap-2 text-xs">
+                  <span className="w-36 truncate text-muted">{tm.name}</span>
+                  <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700">
+                    <div
+                      className="h-1.5 rounded-full bg-brand-500"
+                      style={{ width: `${tm.mastery}%` }}
+                    />
+                  </div>
+                  <span className="w-8 text-right font-semibold">{tm.mastery}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

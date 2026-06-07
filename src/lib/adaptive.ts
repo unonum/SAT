@@ -1,4 +1,4 @@
-import type { Attempt, Difficulty, Question, TopicId, TopicMastery } from './types';
+import type { Attempt, Difficulty, MockSettings, Question, TopicId, TopicMastery } from './types';
 import { QUESTION_BANK } from './questionBank';
 import { TOPICS, MATH_TOPICS, RW_TOPICS } from './topics';
 
@@ -91,7 +91,11 @@ export function computeAllMastery(attempts: Attempt[]): TopicMastery[] {
 export function selectAdaptiveQuestions(
   attempts: Attempt[],
   count: number,
-  opts: { topics?: TopicId[]; mode?: 'balanced' | 'weakness' } = {}
+  opts: {
+    topics?: TopicId[];
+    mode?: 'balanced' | 'weakness';
+    difficultyFilter?: Partial<Record<TopicId, Difficulty[]>>;
+  } = {}
 ): Question[] {
   const mastery = computeAllMastery(attempts);
   const pool = opts.topics ? opts.topics : TOPICS.map((t) => t.id);
@@ -112,7 +116,11 @@ export function selectAdaptiveQuestions(
     const topic = weightedPick(weights);
     const m = weights.find((w) => w.topic === topic)!.mastery;
     const targetDiff = masteryToDifficulty(m);
-    const q = pickQuestion(topic, targetDiff, usedIds, recentIds);
+    const allowedDiffs = opts.difficultyFilter?.[topic];
+    const finalDiff = allowedDiffs
+      ? (allowedDiffs.includes(targetDiff) ? targetDiff : allowedDiffs[0])
+      : targetDiff;
+    const q = pickQuestion(topic, finalDiff, usedIds, recentIds, allowedDiffs);
     if (q) {
       selected.push(q);
       usedIds.add(q.id);
@@ -141,9 +149,14 @@ function pickQuestion(
   topic: TopicId,
   preferred: Difficulty,
   used: Set<string>,
-  recent: Set<string>
+  recent: Set<string>,
+  allowedDiffs?: Difficulty[]
 ): Question | undefined {
-  const inTopic = QUESTION_BANK.filter((q) => q.topic === topic && !used.has(q.id));
+  let inTopic = QUESTION_BANK.filter((q) => q.topic === topic && !used.has(q.id));
+  if (allowedDiffs && allowedDiffs.length > 0) {
+    const filtered = inTopic.filter((q) => allowedDiffs.includes(q.difficulty));
+    if (filtered.length > 0) inTopic = filtered;
+  }
   if (inTopic.length === 0) {
     // fall back to any unused question
     return QUESTION_BANK.find((q) => !used.has(q.id));
@@ -153,6 +166,77 @@ function pickQuestion(
   const byDiff = candidates.filter((q) => q.difficulty === preferred);
   const finalPool = byDiff.length ? byDiff : candidates;
   return finalPool[Math.floor(Math.random() * finalPool.length)];
+}
+
+/**
+ * Returns the difficulty a student should see NEXT for a given topic in a mock test.
+ * - Never seen → 'easy'
+ * - Last mock question was 'easy' AND correct → 'medium'
+ * - Last mock question was 'medium' AND correct → 'hard'
+ * - Last mock question wrong → repeat same difficulty
+ * - Already at 'hard' → stay 'hard'
+ */
+export function topicDifficultyLadder(attempts: Attempt[], topic: TopicId): Difficulty {
+  const mockAttempts = attempts
+    .filter((a) => a.topic === topic && a.mode === 'mock')
+    .sort((a, b) => a.ts - b.ts);
+  if (mockAttempts.length === 0) return 'easy';
+  const last = mockAttempts[mockAttempts.length - 1];
+  if (!last.correct) return last.difficulty;
+  if (last.difficulty === 'easy') return 'medium';
+  if (last.difficulty === 'medium') return 'hard';
+  return 'hard';
+}
+
+/**
+ * Select questions for a mock test using progressive difficulty ladder per topic
+ * and respecting admin difficulty filter from mockSettings.
+ */
+export function selectMockQuestions(
+  attempts: Attempt[],
+  count: number,
+  mockSettings: MockSettings
+): Question[] {
+  const mastery = computeAllMastery(attempts);
+  const pool = TOPICS.map((t) => t.id);
+
+  const weights = pool.map((topic) => {
+    const m = mastery.find((x) => x.topic === topic)!;
+    const gap = Math.max(5, 100 - m.mastery);
+    return { topic, weight: gap, mastery: m.mastery };
+  });
+
+  const recentIds = new Set(attempts.slice(-20).map((a) => a.questionId));
+  const selected: Question[] = [];
+  const usedIds = new Set<string>();
+
+  for (let i = 0; i < count; i++) {
+    const topic = weightedPick(weights);
+    const ladderDiff = topicDifficultyLadder(attempts, topic);
+
+    // Resolve admin filter: per-topic override, fall back to global
+    const adminFilter =
+      mockSettings.difficultyFilter[topic] ??
+      (mockSettings.globalDifficulty.length > 0 ? mockSettings.globalDifficulty : undefined);
+
+    // If the ladder says a difficulty the admin hasn't enabled, downgrade to first allowed
+    let targetDiff: Difficulty = ladderDiff;
+    if (adminFilter && adminFilter.length > 0 && !adminFilter.includes(ladderDiff)) {
+      const order: Difficulty[] = ['easy', 'medium', 'hard'];
+      const closestDown = order
+        .slice(0, order.indexOf(ladderDiff) + 1)
+        .reverse()
+        .find((d) => adminFilter.includes(d));
+      targetDiff = closestDown ?? adminFilter[0];
+    }
+
+    const q = pickQuestion(topic, targetDiff, usedIds, recentIds, adminFilter);
+    if (q) {
+      selected.push(q);
+      usedIds.add(q.id);
+    }
+  }
+  return selected;
 }
 
 /** Estimate an SAT score (400-1600) from section mastery. */

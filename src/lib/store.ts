@@ -4,6 +4,7 @@ import type {
   Attempt,
   DailyStat,
   Gamification,
+  MockSettings,
   PracticeMode,
   Question,
   UserProfile,
@@ -21,6 +22,11 @@ import {
   isRemoteEnabled,
 } from './db';
 
+const DEFAULT_MOCK_SETTINGS: MockSettings = {
+  difficultyFilter: {},
+  globalDifficulty: ['easy', 'medium', 'hard'],
+};
+
 interface AppState {
   // active session (mirrors profiles[currentEmail])
   currentEmail: string | null;
@@ -34,6 +40,9 @@ interface AppState {
   profiles: Record<string, UserData>;
 
   theme: 'light' | 'dark';
+
+  // admin mock test settings
+  mockSettings: MockSettings;
 
   // actions
   signup: (u: Omit<UserProfile, 'createdAt'>) => void;
@@ -51,6 +60,7 @@ interface AppState {
   retryAttempt: (attemptId: string) => void;
   setTheme: (t: 'light' | 'dark') => void;
   resetAll: () => void;
+  setMockSettings: (patch: Partial<MockSettings>) => void;
 
   // remote sync
   remoteEnabled: boolean;
@@ -105,6 +115,7 @@ export const useStore = create<AppState>()(
       daily: [],
       profiles: {},
       remoteEnabled: isRemoteEnabled,
+      mockSettings: DEFAULT_MOCK_SETTINGS,
       theme:
         typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
           ? 'dark'
@@ -250,6 +261,9 @@ export const useStore = create<AppState>()(
             daily: [],
           };
         }),
+
+      setMockSettings: (patch) =>
+        set((s) => ({ mockSettings: { ...s.mockSettings, ...patch } })),
 
       // Pull a user's history from the DB and merge it into their profile.
       hydrateProfile: async (email) => {

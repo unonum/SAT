@@ -140,3 +140,8 @@ export interface Gamification {
   lastActiveDate: string | null;
   badges: string[];
 }
+
+export interface MockSettings {
+  difficultyFilter: Partial<Record<TopicId, Difficulty[]>>;
+  globalDifficulty: Difficulty[];
+}

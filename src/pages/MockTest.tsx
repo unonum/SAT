@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '@/lib/store';
-import { selectAdaptiveQuestions } from '@/lib/adaptive';
-import { QUESTION_BANK } from '@/lib/questionBank';
+import { selectMockQuestions } from '@/lib/adaptive';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
 import { FileText, Clock, Target, ListChecks, Play, Rocket } from 'lucide-react';
@@ -9,18 +8,13 @@ import { benchmarkBaseline } from '@/lib/evaluation';
 import type { Question } from '@/lib/types';
 
 export default function MockTest() {
-  const { attempts } = useStore();
+  const { attempts, mockSettings } = useStore();
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
 
   const start = () => {
-    // A mock blends adaptive selection with broad coverage.
-    const adaptive = selectAdaptiveQuestions(attempts, 12, { mode: 'balanced' });
-    // ensure uniqueness, top up from bank if needed
-    const seen = new Set(adaptive.map((q) => q.id));
-    const extra = QUESTION_BANK.filter((q) => !seen.has(q.id));
-    const full = [...adaptive, ...extra].slice(0, Math.min(16, QUESTION_BANK.length));
-    setQuestions(full);
+    const qs = selectMockQuestions(attempts, 16, mockSettings);
+    setQuestions(qs);
   };
 
   if (questions) {

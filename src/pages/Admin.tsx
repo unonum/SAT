@@ -3,14 +3,17 @@ import { QUESTION_BANK } from '@/lib/questionBank';
 import { TOPICS, TOPIC_MAP } from '@/lib/topics';
 import { useStore } from '@/lib/store';
 import { Card, SectionTitle, Pill, Stat } from '@/components/ui';
-import type { Question } from '@/lib/types';
-import { Database, Search, Eye, BarChart3, CheckCircle2 } from 'lucide-react';
+import type { Difficulty, Question, TopicId } from '@/lib/types';
+import { Database, Search, Eye, BarChart3, CheckCircle2, Settings, AlertTriangle, ChevronRight } from 'lucide-react';
+import { computeWeaknessSignals } from '@/lib/weaknessAnalysis';
+import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 
 export default function Admin() {
-  const { attempts } = useStore();
+  const { attempts, mockSettings, setMockSettings, profiles } = useStore();
   const [search, setSearch] = useState('');
   const [topic, setTopic] = useState<string>('all');
   const [preview, setPreview] = useState<Question | null>(null);
+  const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses'>('questions');
 
   const filtered = useMemo(
     () =>
@@ -30,6 +33,30 @@ export default function Admin() {
     return Math.round((a.filter((x) => x.correct).length / a.length) * 100);
   };
 
+  // Per-topic question counts by difficulty
+  const topicDiffCounts = useMemo(() => {
+    const map: Record<string, Record<Difficulty, number>> = {};
+    for (const t of TOPICS) {
+      map[t.id] = { easy: 0, medium: 0, hard: 0 };
+      for (const q of QUESTION_BANK) {
+        if (q.topic === t.id) map[t.id][q.difficulty]++;
+      }
+    }
+    return map;
+  }, []);
+
+  const toggleDiff = (topicId: TopicId, diff: Difficulty) => {
+    const current = mockSettings.difficultyFilter[topicId] ?? ['easy', 'medium', 'hard'];
+    const next = current.includes(diff) ? current.filter((d) => d !== diff) : [...current, diff];
+    setMockSettings({ difficultyFilter: { ...mockSettings.difficultyFilter, [topicId]: next } });
+  };
+
+  const isDiffEnabled = (topicId: TopicId, diff: Difficulty) => {
+    const filter = mockSettings.difficultyFilter[topicId];
+    if (!filter) return mockSettings.globalDifficulty.includes(diff);
+    return filter.includes(diff);
+  };
+
   return (
     <div className="space-y-6">
       <SectionTitle title="Question Bank Admin" subtitle="Manage and inspect the SAT question library." />
@@ -40,7 +67,125 @@ export default function Admin() {
         <Stat label="Total attempts logged" value={attempts.length} accent="success" icon={<CheckCircle2 size={20} />} />
       </div>
 
-      <Card>
+      {/* Tab navigation */}
+      <div className="flex gap-2 border-b border-[rgb(var(--border))]">
+        {(['questions', 'mock-settings', 'weaknesses'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+              activeTab === tab
+                ? 'border-brand-500 text-brand-600'
+                : 'border-transparent text-muted hover:text-foreground'
+            }`}
+          >
+            {tab === 'questions' ? <><Database size={14} className="inline mr-1" />Question Bank</> :
+             tab === 'mock-settings' ? <><Settings size={14} className="inline mr-1" />Mock Settings</> :
+             <><AlertTriangle size={14} className="inline mr-1" />Weakness Report</>}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'mock-settings' && (
+        <Card>
+          <SectionTitle title="Mock Test Difficulty Settings" subtitle="Control which difficulty levels appear per topic in mock tests." />
+          <div className="space-y-3 mt-2">
+            {TOPICS.map((t) => (
+              <div key={t.id} className="flex flex-wrap items-center gap-3 py-2 border-b border-[rgb(var(--border))]/50 last:border-0">
+                <span className="w-52 font-medium text-sm">{t.name}</span>
+                <div className="flex gap-2">
+                  {(['easy', 'medium', 'hard'] as Difficulty[]).map((diff) => {
+                    const enabled = isDiffEnabled(t.id, diff);
+                    const count = topicDiffCounts[t.id]?.[diff] ?? 0;
+                    return (
+                      <button
+                        key={diff}
+                        onClick={() => toggleDiff(t.id, diff)}
+                        className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                          enabled
+                            ? diff === 'easy' ? 'bg-emerald-100 border-emerald-400 text-emerald-700 dark:bg-emerald-900/40 dark:border-emerald-600 dark:text-emerald-300'
+                            : diff === 'medium' ? 'bg-amber-100 border-amber-400 text-amber-700 dark:bg-amber-900/40 dark:border-amber-600 dark:text-amber-300'
+                            : 'bg-red-100 border-red-400 text-red-700 dark:bg-red-900/40 dark:border-red-600 dark:text-red-300'
+                            : 'bg-slate-100 border-slate-300 text-slate-400 dark:bg-slate-800 dark:border-slate-600'
+                        }`}
+                      >
+                        {diff} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 text-xs text-muted">
+            Toggles apply immediately. Mock tests started after saving will use these filters.
+          </div>
+        </Card>
+      )}
+
+      {activeTab === 'weaknesses' && (
+        <Card>
+          <SectionTitle title="Student Weakness Report" subtitle="Aggregated wrong-answer patterns across all students." />
+          {STUDENT_EMAILS.map((email) => {
+            const pd = profiles[email];
+            if (!pd) return null;
+            const signals = computeWeaknessSignals(pd.attempts);
+            if (!signals.length) return (
+              <div key={email} className="py-3 border-b border-[rgb(var(--border))]/50">
+                <span className="font-semibold">{displayName(email)}</span>
+                <span className="ml-2 text-xs text-muted">No wrong answers recorded.</span>
+              </div>
+            );
+            return (
+              <div key={email} className="mb-6">
+                <h3 className="font-display font-bold mb-2">{displayName(email)}</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs uppercase text-muted">
+                        <th className="pb-2 pr-3">Topic</th>
+                        <th className="pb-2 pr-3">Difficulty</th>
+                        <th className="pb-2 pr-3">Misses</th>
+                        <th className="pb-2 pr-3">Suggested Training</th>
+                        <th className="pb-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {signals.slice(0, 8).map((sig, i) => (
+                        <tr key={i} className="border-b border-[rgb(var(--border))]/50">
+                          <td className="py-2 pr-3 font-medium">{TOPIC_MAP[sig.topic]?.name ?? sig.topic}</td>
+                          <td className="py-2 pr-3">
+                            <Pill tone={sig.difficulty === 'hard' ? 'danger' : sig.difficulty === 'medium' ? 'warning' : 'success'}>
+                              {sig.difficulty}
+                            </Pill>
+                          </td>
+                          <td className="py-2 pr-3 font-bold text-danger">{sig.count}</td>
+                          <td className="py-2 pr-3 text-muted text-xs">{sig.suggestedAction}</td>
+                          <td className="py-2">
+                            <button
+                              className="btn-ghost h-8 px-2 text-xs flex items-center gap-1"
+                              onClick={() => setMockSettings({
+                                difficultyFilter: {
+                                  ...mockSettings.difficultyFilter,
+                                  [sig.topic]: [sig.difficulty],
+                                },
+                              })}
+                            >
+                              <ChevronRight size={12} /> Push to mock
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {activeTab === 'questions' && <Card>
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[200px]">
             <Search size={16} className="absolute left-3.5 top-3 text-muted" />
@@ -96,7 +241,7 @@ export default function Admin() {
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
 
       {preview && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" onClick={() => setPreview(null)}>
