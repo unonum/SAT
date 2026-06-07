@@ -6,6 +6,7 @@ import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 import { computeAllMastery, estimateScore } from '@/lib/adaptive';
 import { generateWeeklyReport, MISTAKE_LABELS } from '@/lib/tutor';
 import { TOPIC_MAP, TOPICS } from '@/lib/topics';
+import { EVAL_TESTS, evalSessions } from '@/lib/evaluation';
 import { Card, SectionTitle, Pill, Stat, MasteryBar, ProgressRing } from '@/components/ui';
 import { masteryColor, relativeDate, formatTime } from '@/lib/utils';
 import type { UserData, MistakeCategory, TopicId } from '@/lib/types';
@@ -230,9 +231,104 @@ export default function TeamDashboard() {
         <Stat label="Shared weak area" value={<span className="text-base">{sharedWeakness(students)}</span>} icon={<AlertTriangle size={20} />} accent="warning" />
       </div>
 
+      {/* Evaluations — sitting-by-sitting across students */}
+      <EvalSection students={students} colors={barColors} />
+
       {/* Deep analytics (real data) */}
       {totalAttempts > 0 && <ClassAnalytics students={students} colors={barColors} />}
     </div>
+  );
+}
+
+/** Per-student evaluation results, side by side across the 3 full tests. */
+function EvalSection({ students, colors }: { students: StudentView[]; colors: string[] }) {
+  // Build, per test, each student's list of sitting scores.
+  const data = EVAL_TESTS.map((def) => ({
+    def,
+    perStudent: students.map((s) => ({
+      name: s.name,
+      email: s.email,
+      sessions: evalSessions(s.data.attempts, def.mode),
+    })),
+  }));
+
+  const anyTaken = data.some((t) => t.perStudent.some((p) => p.sessions.length > 0));
+  if (!anyTaken) {
+    return (
+      <Card>
+        <SectionTitle title="Full evaluations" subtitle="Side-by-side evaluation results across students" />
+        <div className="grid h-24 place-items-center text-sm text-muted">
+          No evaluation tests taken yet — results will appear here once students start them.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <SectionTitle title="Full evaluations" subtitle="Sitting-by-sitting scores per test — compare students directly" />
+      <div className="space-y-6">
+        {data.map(({ def, perStudent }) => {
+          const taken = perStudent.some((p) => p.sessions.length > 0);
+          return (
+            <div key={def.id}>
+              <div className="flex items-center gap-2 mb-2">
+                <h4 className="font-display font-bold text-sm">{def.name}</h4>
+                {!taken && <Pill tone="muted">Not taken yet</Pill>}
+              </div>
+              {taken && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-muted">
+                      <tr className="text-left border-b border-[rgb(var(--border))]">
+                        <th className="py-1.5 pr-3 font-semibold">Student</th>
+                        <th className="py-1.5 px-3 font-semibold text-right">Sittings</th>
+                        <th className="py-1.5 px-3 font-semibold text-right">First</th>
+                        <th className="py-1.5 px-3 font-semibold text-right">Latest</th>
+                        <th className="py-1.5 px-3 font-semibold text-right">Best</th>
+                        <th className="py-1.5 px-3 font-semibold text-right">Change</th>
+                        <th className="py-1.5 pl-3 font-semibold">Trend</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {perStudent.map((p, i) => {
+                        const n = p.sessions.length;
+                        if (!n) {
+                          return (
+                            <tr key={p.email} className="border-b border-[rgb(var(--border))]/50 text-muted">
+                              <td className="py-1.5 pr-3 font-medium" style={{ color: colors[i % colors.length] }}>{p.name}</td>
+                              <td className="py-1.5 px-3 text-right" colSpan={6}>Not taken</td>
+                            </tr>
+                          );
+                        }
+                        const scores = p.sessions.map((s) => s.score);
+                        const first = scores[0];
+                        const latest = scores[n - 1];
+                        const best = Math.max(...scores);
+                        const delta = latest - first;
+                        return (
+                          <tr key={p.email} className="border-b border-[rgb(var(--border))]/50">
+                            <td className="py-1.5 pr-3 font-medium" style={{ color: colors[i % colors.length] }}>{p.name}</td>
+                            <td className="py-1.5 px-3 text-right">{n}</td>
+                            <td className="py-1.5 px-3 text-right">{first}</td>
+                            <td className="py-1.5 px-3 text-right font-semibold">{latest}</td>
+                            <td className="py-1.5 px-3 text-right">{best}</td>
+                            <td className={`py-1.5 px-3 text-right font-semibold ${delta >= 0 ? 'text-success' : 'text-danger'}`}>
+                              {n > 1 ? `${delta >= 0 ? '+' : ''}${delta}` : '—'}
+                            </td>
+                            <td className="py-1.5 pl-3 tabular-nums text-xs text-muted">{scores.join(' → ')}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
