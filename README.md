@@ -93,6 +93,53 @@ src/
 
 ---
 
+## 🗄️ Database (Turso) — persistent cross-device history
+
+Progress is stored in **Turso** (libSQL / SQLite) so the same accounts share one
+history across devices, and the **Master Dashboard** can analyse it. The browser
+never holds DB credentials — it calls a thin serverless API that does.
+
+```
+Browser (SPA)  ──fetch──▶  /api/attempts (Vercel function)  ──libSQL──▶  Turso
+   src/lib/db.ts              api/attempts.ts                          attempts table
+```
+
+- **Write:** every answer is upserted to `attempts` (fire-and-forget).
+- **Read on login:** a student's history hydrates from the DB; the admin pulls
+  **all** students' history into the Master Dashboard.
+- **History analytics:** because each row carries `ts`, the estimated SAT score
+  and mastery can be reconstructed for any point in time (score-over-time chart,
+  weekly deltas, "what improved").
+- **Graceful fallback:** with no DB configured it runs local-only (localStorage)
+  with seeded sample students, clearly badged **Sample** vs **Live**.
+
+### Setup
+
+1. Create a Turso DB and token:
+   ```bash
+   turso db create target1450
+   turso db tokens create target1450
+   turso db show target1450        # copy the libsql:// URL
+   ```
+2. (Optional) apply the schema — the API also auto-creates it:
+   ```bash
+   turso db shell target1450 < db/schema.sql
+   ```
+3. Set env vars (locally in `.env`, and in **Vercel → Settings → Environment Variables**):
+   ```
+   TURSO_DATABASE_URL=libsql://target1450-<org>.turso.io
+   TURSO_AUTH_TOKEN=<token>
+   ```
+4. Deploy. On the Master Dashboard, click **“Push sample history to DB”** once to
+   bootstrap demo history, or just let real activity accumulate.
+
+> For full local dev *with* the API, use `vercel dev` (plain `vite` won't run the
+> `/api` functions, so it falls back to local mode). Note: the API is open to the
+> three known emails for this private demo — add a shared-secret header before
+> exposing it publicly.
+
+---
+
 ## 🏗 Production architecture (reference)
 
 The client here is production-shaped. A full deployment would add:

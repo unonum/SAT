@@ -13,6 +13,15 @@ import { classifyMistake, estimateScore, computeAllMastery } from './adaptive';
 import { evaluateBadges, todayStr, updateStreak, xpForAttempt } from './gamification';
 import { isAdmin, STUDENT_EMAILS } from './auth';
 import { seedStudentProfiles } from './seed';
+import { rebuildFromAttempts } from './history';
+import {
+  pushAttempt,
+  markRetried,
+  fetchAttempts,
+  fetchAttemptsForUsers,
+  pushAttemptsBulk,
+  isRemoteEnabled,
+} from './db';
 
 interface AppState {
   // active session (mirrors profiles[currentEmail])
@@ -44,6 +53,19 @@ interface AppState {
   retryAttempt: (attemptId: string) => void;
   setTheme: (t: 'light' | 'dark') => void;
   resetAll: () => void;
+
+  // remote sync
+  remoteEnabled: boolean;
+  hydrateProfile: (email: string) => Promise<void>;
+  hydrateStudents: () => Promise<void>;
+  seedStudentsToDB: () => Promise<void>;
+}
+
+/** Union two attempt lists by id (local + remote), preserving order by ts. */
+function mergeAttempts(a: Attempt[], b: Attempt[]): Attempt[] {
+  const map = new Map<string, Attempt>();
+  for (const x of [...a, ...b]) map.set(x.id, x);
+  return Array.from(map.values()).sort((x, y) => x.ts - y.ts);
 }
 
 const initialGamification: Gamification = {
@@ -99,6 +121,7 @@ export const useStore = create<AppState>()(
       gamification: initialGamification,
       daily: [],
       profiles: {},
+      remoteEnabled: isRemoteEnabled,
       theme:
         typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
           ? 'dark'
@@ -196,6 +219,10 @@ export const useStore = create<AppState>()(
 
           return { attempts, gamification, daily, profiles: snapshotProfiles({ ...s, attempts, gamification, daily }) };
         });
+
+        // persist to DB (fire-and-forget)
+        const email = get().currentEmail;
+        if (email) void pushAttempt(email, attempt);
       },
 
       finishSession: (_mode, accuracy) => {
@@ -211,11 +238,13 @@ export const useStore = create<AppState>()(
       markDiagnosticDone: () =>
         set((s) => ({ hasDiagnostic: true, profiles: snapshotProfiles({ ...s, hasDiagnostic: true }) })),
 
-      retryAttempt: (attemptId) =>
+      retryAttempt: (attemptId) => {
         set((s) => {
           const attempts = s.attempts.map((a) => (a.id === attemptId ? { ...a, retried: true } : a));
           return { attempts, profiles: snapshotProfiles({ ...s, attempts }) };
-        }),
+        });
+        void markRetried(attemptId);
+      },
 
       setTheme: (t) => {
         applyTheme(t);
@@ -236,6 +265,69 @@ export const useStore = create<AppState>()(
             daily: [],
           };
         }),
+
+      // Pull a user's history from the DB and merge it into their profile.
+      hydrateProfile: async (email) => {
+        if (!isRemoteEnabled) return;
+        const remote = await fetchAttempts(email);
+        if (!remote.length) return;
+        set((s) => {
+          const existing = s.profiles[email]?.attempts ?? [];
+          const attempts = mergeAttempts(existing, remote);
+          const { daily, gamification } = rebuildFromAttempts(attempts);
+          const prevUser = s.profiles[email]?.user ?? s.user;
+          const pd: UserData = {
+            user: prevUser,
+            hasDiagnostic: attempts.length > 0,
+            attempts,
+            daily,
+            gamification,
+            seeded: false,
+          };
+          const profiles = { ...s.profiles, [email]: pd };
+          // if this is the active user, refresh the live session too
+          if (s.currentEmail === email) {
+            return { profiles, attempts, daily, gamification, hasDiagnostic: pd.hasDiagnostic };
+          }
+          return { profiles };
+        });
+      },
+
+      // Admin: pull every student's history into the profiles map.
+      hydrateStudents: async () => {
+        if (!isRemoteEnabled) return;
+        const byUser = await fetchAttemptsForUsers(STUDENT_EMAILS);
+        set((s) => {
+          const profiles = { ...s.profiles };
+          for (const email of STUDENT_EMAILS) {
+            const remote = byUser[email] ?? [];
+            if (!remote.length) continue;
+            const attempts = mergeAttempts([], remote);
+            const { daily, gamification } = rebuildFromAttempts(attempts);
+            profiles[email] = {
+              user: profiles[email]?.user ?? {
+                name: '', email, role: 'student', targetScore: 1450, studyHoursPerDay: 1, createdAt: Date.now(),
+              },
+              hasDiagnostic: true,
+              attempts,
+              daily,
+              gamification,
+              seeded: false,
+            };
+          }
+          return { profiles };
+        });
+      },
+
+      // One-time: push the local sample history for both students to the DB.
+      seedStudentsToDB: async () => {
+        if (!isRemoteEnabled) return;
+        const seeds = seedStudentProfiles();
+        for (const email of STUDENT_EMAILS) {
+          await pushAttemptsBulk(email, seeds[email].attempts);
+        }
+        await get().hydrateStudents();
+      },
     }),
     {
       name: 't1450-store',

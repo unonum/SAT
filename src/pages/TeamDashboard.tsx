@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useStore } from '@/lib/store';
+import { scoreHistory } from '@/lib/history';
 import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 import { computeAllMastery, estimateScore } from '@/lib/adaptive';
 import { generateWeeklyReport, MISTAKE_LABELS } from '@/lib/tutor';
@@ -13,7 +14,8 @@ import {
   CheckCircle2, ChevronDown, Trophy, Activity,
 } from 'lucide-react';
 import {
-  BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
+  BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
+  LineChart, Line, Legend,
 } from 'recharts';
 
 interface StudentView {
@@ -31,7 +33,16 @@ interface StudentView {
 
 export default function TeamDashboard() {
   const profiles = useStore((s) => s.profiles);
+  const remoteEnabled = useStore((s) => s.remoteEnabled);
+  const hydrateStudents = useStore((s) => s.hydrateStudents);
+  const seedStudentsToDB = useStore((s) => s.seedStudentsToDB);
   const [openEmail, setOpenEmail] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // Pull latest history from the DB whenever the admin opens this view.
+  useEffect(() => {
+    if (remoteEnabled) void hydrateStudents();
+  }, [remoteEnabled, hydrateStudents]);
 
   const students: StudentView[] = useMemo(() => {
     return STUDENT_EMAILS.filter((e) => profiles[e]).map((email) => {
@@ -82,10 +93,34 @@ export default function TeamDashboard() {
           <h1 className="font-display text-xl font-extrabold">Master Dashboard</h1>
           <p className="text-sm text-muted">Admin view · monitoring {students.length} students</p>
         </div>
-        {anySample && (
-          <Pill tone="warning"><AlertTriangle size={12} /> Sample data shown for students with no synced activity</Pill>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill tone={remoteEnabled ? 'success' : 'muted'}>
+            <span className={`h-2 w-2 rounded-full ${remoteEnabled ? 'bg-success' : 'bg-slate-400'}`} />
+            {remoteEnabled ? 'DB connected' : 'Local mode'}
+          </Pill>
+          {remoteEnabled && (
+            <button
+              className="btn-ghost px-3 py-1.5 text-xs"
+              disabled={syncing}
+              onClick={async () => { setSyncing(true); await hydrateStudents(); setSyncing(false); }}
+            >
+              {syncing ? 'Syncing…' : 'Refresh'}
+            </button>
+          )}
+          {remoteEnabled && anySample && (
+            <button
+              className="btn-primary px-3 py-1.5 text-xs"
+              disabled={syncing}
+              onClick={async () => { setSyncing(true); await seedStudentsToDB(); setSyncing(false); }}
+            >
+              Push sample history to DB
+            </button>
+          )}
+        </div>
       </div>
+      {anySample && (
+        <Pill tone="warning"><AlertTriangle size={12} /> Showing sample data for students with no synced activity yet</Pill>
+      )}
 
       {/* Student summary cards */}
       <div className="grid gap-5 lg:grid-cols-2">
@@ -182,6 +217,12 @@ export default function TeamDashboard() {
         </div>
       </Card>
 
+      {/* Historical progress */}
+      <Card>
+        <SectionTitle title="Historical progress" subtitle="Estimated SAT score over time — see exactly what improved and when" />
+        <HistoryChart students={students} colors={barColors} />
+      </Card>
+
       {/* Class-wide insights */}
       <div className="grid gap-5 lg:grid-cols-3">
         <Stat label="Combined questions" value={students.reduce((a, s) => a + s.data.attempts.length, 0)} icon={<CheckCircle2 size={20} />} accent="brand" />
@@ -245,6 +286,46 @@ function StudentDetail({ s }: { s: StudentView }) {
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function HistoryChart({ students, colors }: { students: StudentView[]; colors: string[] }) {
+  // merge each student's daily score series by date
+  const byDate = new Map<string, Record<string, number | string>>();
+  students.forEach((s) => {
+    scoreHistory(s.data.attempts).forEach((pt) => {
+      const row = byDate.get(pt.date) ?? { date: pt.date };
+      row[s.name] = pt.score;
+      byDate.set(pt.date, row);
+    });
+  });
+  const data = Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  if (data.length < 2) {
+    return <div className="grid h-[260px] place-items-center text-sm text-muted">Not enough history yet — progress will plot as students practice.</div>;
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <LineChart data={data} margin={{ left: -10, right: 10, top: 10 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
+        <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#94a3b8" />
+        <YAxis domain={[400, 1600]} tick={{ fontSize: 11 }} stroke="#94a3b8" width={44} />
+        <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} />
+        <Legend />
+        {students.map((s, i) => (
+          <Line
+            key={s.email}
+            type="monotone"
+            dataKey={s.name}
+            stroke={colors[i % colors.length]}
+            strokeWidth={2.5}
+            dot={{ r: 2 }}
+            connectNulls
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
   );
 }
 

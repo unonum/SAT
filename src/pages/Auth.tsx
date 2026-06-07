@@ -7,12 +7,13 @@ import { checkCredentials } from '@/lib/auth';
 
 export default function Auth({ signup }: { signup?: boolean }) {
   const navigate = useNavigate();
-  const { signup: doSignup, user, hasDiagnostic } = useStore();
+  const { signup: doSignup, hydrateProfile, hydrateStudents } = useStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -23,20 +24,33 @@ export default function Auth({ signup }: { signup?: boolean }) {
     }
 
     const normalized = email.trim().toLowerCase();
-    // Returning user who already set up — go straight in.
-    if (user && user.email === normalized) {
-      navigate(hasDiagnostic ? '/app' : '/assessment');
-      return;
-    }
+    setBusy(true);
 
+    // create/swap to this account's profile
     doSignup({
       name: result.name ?? 'Student',
       email: normalized,
-      role: 'student',
+      role: result.isAdmin ? 'admin' : 'student',
       targetScore: 1450,
       studyHoursPerDay: 1,
     });
-    navigate('/assessment');
+
+    // pull history from the DB (no-op in local-only mode)
+    try {
+      if (result.isAdmin) {
+        await hydrateStudents();
+        setBusy(false);
+        navigate('/app/team');
+        return;
+      }
+      await hydrateProfile(normalized);
+    } catch {
+      /* ignore network errors — fall back to local */
+    }
+
+    setBusy(false);
+    const hasDiag = useStore.getState().hasDiagnostic;
+    navigate(hasDiag ? '/app' : '/assessment');
   };
 
   return (
@@ -145,8 +159,9 @@ export default function Auth({ signup }: { signup?: boolean }) {
               type="submit"
               className="btn-primary w-full py-3 text-base"
               whileTap={{ scale: 0.97 }}
+              disabled={busy}
             >
-              Log in <ArrowRight size={17} />
+              {busy ? 'Loading your progress…' : <>Log in <ArrowRight size={17} /></>}
             </motion.button>
           </form>
 
