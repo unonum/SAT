@@ -40,6 +40,8 @@ export interface Question {
   correct: 'A' | 'B' | 'C' | 'D';
   /** estimated seconds a well-prepared student needs */
   parTimeSec: number;
+  ragGenerated?: boolean;
+  sourceChunk?: string;
   /** AI tutor content authored per question */
   explanation: {
     correctWhy: string;

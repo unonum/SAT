@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Dumbbell, Target, CalendarCheck, FileText,
   AlertTriangle, LineChart, Database, Settings, Sun, Moon,
   Flame, Menu, X, LogOut, Sparkles, ChevronRight, Crown,
-  ClipboardCheck, Lock,
+  ClipboardCheck, Lock, Upload,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isAdmin } from '@/lib/auth';
@@ -29,6 +29,7 @@ const STUDENT_NAV = [
 const ADMIN_NAV = [
   { to: '/app/team', label: 'Master Dashboard', icon: Crown, end: true },
   { to: '/app/admin', label: 'Question Bank', icon: Database },
+  { to: '/app/admin/rag', label: 'Question Ingestion', icon: Upload },
   { to: '/app/settings', label: 'Settings', icon: Settings },
 ];
 

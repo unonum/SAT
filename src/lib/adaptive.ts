@@ -150,16 +150,18 @@ function pickQuestion(
   preferred: Difficulty,
   used: Set<string>,
   recent: Set<string>,
-  allowedDiffs?: Difficulty[]
+  allowedDiffs?: Difficulty[],
+  ragQuestions: Question[] = []
 ): Question | undefined {
-  let inTopic = QUESTION_BANK.filter((q) => q.topic === topic && !used.has(q.id));
+  const combinedBank = [...QUESTION_BANK, ...ragQuestions];
+  let inTopic = combinedBank.filter((q) => q.topic === topic && !used.has(q.id));
   if (allowedDiffs && allowedDiffs.length > 0) {
     const filtered = inTopic.filter((q) => allowedDiffs.includes(q.difficulty));
     if (filtered.length > 0) inTopic = filtered;
   }
   if (inTopic.length === 0) {
     // fall back to any unused question
-    return QUESTION_BANK.find((q) => !used.has(q.id));
+    return combinedBank.find((q) => !used.has(q.id));
   }
   const fresh = inTopic.filter((q) => !recent.has(q.id));
   const candidates = fresh.length ? fresh : inTopic;
@@ -195,7 +197,8 @@ export function topicDifficultyLadder(attempts: Attempt[], topic: TopicId): Diff
 export function selectMockQuestions(
   attempts: Attempt[],
   count: number,
-  mockSettings: MockSettings
+  mockSettings: MockSettings,
+  ragQuestions: Question[] = []
 ): Question[] {
   const mastery = computeAllMastery(attempts);
   const pool = TOPICS.map((t) => t.id);
@@ -230,7 +233,7 @@ export function selectMockQuestions(
       targetDiff = closestDown ?? adminFilter[0];
     }
 
-    const q = pickQuestion(topic, targetDiff, usedIds, recentIds, adminFilter);
+    const q = pickQuestion(topic, targetDiff, usedIds, recentIds, adminFilter, ragQuestions);
     if (q) {
       selected.push(q);
       usedIds.add(q.id);

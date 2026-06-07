@@ -251,6 +251,11 @@ export default function QuestionRunner({ questions, mode, title, timed, onComple
               <span className="ml-auto chip bg-slate-500/10 text-muted border border-[rgb(var(--border))]">
                 <Clock size={12} /> ~{q.parTimeSec}s
               </span>
+              {q.ragGenerated && (
+                <span className="text-[10px] text-muted italic border border-dashed border-muted/40 rounded px-1.5 py-0.5">
+                  ✦ RAG
+                </span>
+              )}
             </div>
 
             {/* Passage */}

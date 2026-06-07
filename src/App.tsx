@@ -20,6 +20,7 @@ import ProgressReport from '@/pages/ProgressReport';
 import ParentDashboard from '@/pages/ParentDashboard';
 import TeamDashboard from '@/pages/TeamDashboard';
 import Admin from '@/pages/Admin';
+import RagAdmin from '@/pages/RagAdmin';
 import Settings from '@/pages/Settings';
 
 // Panels a student may reach before the benchmark evaluations are complete.
@@ -76,6 +77,7 @@ export default function App() {
       <Route path="/app/report" element={<Protected><ProgressReport /></Protected>} />
       <Route path="/app/parent" element={<Protected><ParentDashboard /></Protected>} />
       <Route path="/app/admin" element={<AdminOnly><Admin /></AdminOnly>} />
+      <Route path="/app/admin/rag" element={<AdminOnly><RagAdmin /></AdminOnly>} />
       <Route path="/app/settings" element={<Protected><Settings /></Protected>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

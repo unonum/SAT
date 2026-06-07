@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '@/lib/store';
 import { selectMockQuestions } from '@/lib/adaptive';
 import QuestionRunner from '@/components/QuestionRunner';
@@ -6,14 +6,22 @@ import { Card, SectionTitle, Pill } from '@/components/ui';
 import { FileText, Clock, Target, ListChecks, Play, Rocket } from 'lucide-react';
 import { benchmarkBaseline } from '@/lib/evaluation';
 import type { Question } from '@/lib/types';
+import { fetchRagQuestions } from '@/lib/ragClient';
 
 export default function MockTest() {
   const { attempts, mockSettings } = useStore();
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
+  const [ragPool, setRagPool] = useState<Question[]>([]);
+
+  useEffect(() => {
+    fetchRagQuestions()
+      .then(setRagPool)
+      .catch(() => setRagPool([]));
+  }, []);
 
   const start = () => {
-    const qs = selectMockQuestions(attempts, 16, mockSettings);
+    const qs = selectMockQuestions(attempts, 16, mockSettings, ragPool);
     setQuestions(qs);
   };
 
