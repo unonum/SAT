@@ -1,8 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ensureRagSchema, upsertChunk, listSources } from './_lib/turso';
+import { ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso';
 
 // Images can still be large; PDFs are now extracted client-side.
-export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
+// maxDuration: 300s (Vercel Pro). Batched Turso writes keep us well within it.
+export const config = { api: { bodyParser: { sizeLimit: '10mb' }, maxDuration: 300 } };
 
 async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   if (filetype === 'pdf') {
@@ -62,6 +63,8 @@ async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   return buffer.toString('utf-8');
 }
 
+const MAX_CHUNKS = 600; // ~300k chars — enough for a full SAT book
+
 function chunkText(text: string, size = 500, overlap = 50): string[] {
   const chunks: string[] = [];
   let start = 0;
@@ -69,6 +72,7 @@ function chunkText(text: string, size = 500, overlap = 50): string[] {
     const end = Math.min(start + size, text.length);
     chunks.push(text.slice(start, end).trim());
     start += size - overlap;
+    if (chunks.length >= MAX_CHUNKS) break;
   }
   return chunks.filter((c) => c.length > 10);
 }
@@ -122,8 +126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Embed in batches of 20
-    let chunkCount = 0;
+    // Embed in batches of 20, collect all rows, then batch-write to Turso
+    const rows: Parameters<typeof upsertChunkBatch>[0] = [];
     for (let i = 0; i < chunks.length; i += 20) {
       const batch = chunks.slice(i, i + 20);
       const embResp = await openai.embeddings.create({
@@ -132,7 +136,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       for (let j = 0; j < batch.length; j++) {
         const globalIdx = i + j;
-        await upsertChunk({
+        rows.push({
           id: `chunk-${filename}-${globalIdx}-${now}`,
           source_name: filename,
           source_type: filetype,
@@ -141,9 +145,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           embedding: embResp.data[j].embedding,
           created_at: now,
         });
-        chunkCount++;
       }
     }
+    await upsertChunkBatch(rows);
+    const chunkCount = rows.length;
 
     return res.status(200).json({ ok: true, chunks: chunkCount, source: filename });
   } catch (err: unknown) {

@@ -88,29 +88,26 @@ export interface RagQuestionRow {
   created_at: number;
 }
 
-export async function upsertChunk(chunk: {
-  id: string;
-  source_name: string;
-  source_type: string;
-  chunk_index: number;
-  content: string;
-  embedding: number[];
-  created_at: number;
-}): Promise<void> {
+type ChunkRow = {
+  id: string; source_name: string; source_type: string;
+  chunk_index: number; content: string; embedding: number[]; created_at: number;
+};
+
+export async function upsertChunk(chunk: ChunkRow): Promise<void> {
+  await upsertChunkBatch([chunk]);
+}
+
+export async function upsertChunkBatch(chunks: ChunkRow[]): Promise<void> {
+  if (chunks.length === 0) return;
   const db = getClient();
-  await db.execute({
+  const stmts = chunks.map((c) => ({
     sql: `INSERT OR REPLACE INTO rag_chunks (id, source_name, source_type, chunk_index, content, embedding, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    args: [
-      chunk.id,
-      chunk.source_name,
-      chunk.source_type,
-      chunk.chunk_index,
-      chunk.content,
-      JSON.stringify(chunk.embedding),
-      chunk.created_at,
-    ],
-  });
+    args: [c.id, c.source_name, c.source_type, c.chunk_index, c.content, JSON.stringify(c.embedding), c.created_at],
+  }));
+  for (let i = 0; i < stmts.length; i += 100) {
+    await db.batch(stmts.slice(i, i + 100), 'write');
+  }
 }
 
 export async function fetchAllChunks(): Promise<Array<{ id: string; content: string; embedding: number[] }>> {
