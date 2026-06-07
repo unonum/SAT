@@ -11,7 +11,7 @@ import {
   CheckCircle2, XCircle, Clock, Lightbulb, Zap, Brain,
   AlertTriangle, Timer, ArrowRight, Trophy,
 } from 'lucide-react';
-import { BADGES } from '@/lib/gamification';
+import { BADGES, BENCHMARK_XP } from '@/lib/gamification';
 
 interface Props {
   questions: Question[];
@@ -80,7 +80,9 @@ export default function QuestionRunner({ questions, mode, title, timed, onComple
   if (done) {
     const correct = results.filter(Boolean).length;
     const acc = Math.round((correct / questions.length) * 100);
-    const emoji = acc >= 80 ? '🎉' : acc >= 50 ? '💪' : '🌱';
+    const benchmarkEarned = newBadges.includes('benchmark-crusher');
+    const emoji = benchmarkEarned ? '🏆' : acc >= 80 ? '🎉' : acc >= 50 ? '💪' : '🌱';
+
     return (
       <motion.div
         className="mx-auto max-w-xl"
@@ -88,32 +90,70 @@ export default function QuestionRunner({ questions, mode, title, timed, onComple
         animate={{ opacity: 1, scale: 1 }}
         transition={{ type: 'spring', stiffness: 300, damping: 26 }}
       >
-        <div className="card-glow p-8 text-center rounded-3xl">
+        <div className={`p-8 text-center rounded-3xl ${benchmarkEarned ? 'bg-gradient-to-br from-violet-600 to-brand-600 text-white shadow-glow-violet' : 'card-glow'}`}>
           <motion.div
             className="text-6xl mb-3"
-            animate={{ scale: [1, 1.15, 1] }}
-            transition={{ duration: 0.5, delay: 0.3 }}
+            animate={{ scale: [1, 1.2, 0.95, 1.1, 1], rotate: benchmarkEarned ? [0, -8, 8, -4, 0] : 0 }}
+            transition={{ duration: 0.7, delay: 0.2 }}
           >
             {emoji}
           </motion.div>
-          <h2 className="font-display text-3xl font-extrabold">Session complete!</h2>
-          <p className="text-muted mt-1">{title}</p>
 
-          <div className="my-7 flex items-center justify-center gap-10">
-            <ProgressRing value={acc} size={130} label={`${acc}%`} sublabel="accuracy" />
+          {benchmarkEarned ? (
+            <>
+              <h2 className="font-display text-3xl font-extrabold">Benchmark Crushed!</h2>
+              <p className="mt-1 text-white/85">All 3 evaluations complete — your baseline is set.</p>
+              <motion.div
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.5, type: 'spring', stiffness: 300 }}
+                className="my-6 mx-auto w-fit rounded-2xl bg-white/20 px-6 py-4"
+              >
+                <div className="font-display text-5xl font-extrabold">+{BENCHMARK_XP} XP</div>
+                <div className="text-sm text-white/80 mt-1">Benchmark bonus awarded</div>
+              </motion.div>
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.7 }}
+                className="mb-6 flex flex-wrap justify-center gap-2"
+              >
+                <div className="rounded-xl bg-white/15 border border-white/25 px-4 py-2 text-sm font-bold">
+                  🏆 Benchmark Crusher badge unlocked
+                </div>
+              </motion.div>
+              <p className="text-sm text-white/70 mb-5">
+                Your full dashboard, daily practice, mock tests, and personalised study plan are now unlocked.
+              </p>
+            </>
+          ) : (
+            <>
+              <h2 className="font-display text-3xl font-extrabold">Session complete!</h2>
+              <p className="text-muted mt-1">{title}</p>
+            </>
+          )}
+
+          <div className="my-5 flex items-center justify-center gap-10">
+            <ProgressRing
+              value={acc}
+              size={benchmarkEarned ? 110 : 130}
+              label={`${acc}%`}
+              sublabel="accuracy"
+              color={benchmarkEarned ? '#ffffff' : undefined}
+            />
             <div className="text-left space-y-2">
               <div>
-                <span className="font-display text-3xl font-extrabold">{correct}</span>
-                <span className="text-muted"> / {questions.length}</span>
+                <span className={`font-display text-3xl font-extrabold ${benchmarkEarned ? 'text-white' : ''}`}>{correct}</span>
+                <span className={benchmarkEarned ? 'text-white/70' : 'text-muted'}> / {questions.length}</span>
               </div>
-              <div className="text-sm text-muted">correct answers</div>
-              <Pill tone={acc >= 80 ? 'success' : acc >= 50 ? 'warning' : 'danger'}>
-                {acc >= 80 ? 'Excellent' : acc >= 50 ? 'Good effort' : 'Keep going'}
+              <div className={`text-sm ${benchmarkEarned ? 'text-white/80' : 'text-muted'}`}>correct answers</div>
+              <Pill tone={benchmarkEarned ? 'success' : acc >= 80 ? 'success' : acc >= 50 ? 'warning' : 'danger'}>
+                {benchmarkEarned ? '🔓 Dashboard unlocked' : acc >= 80 ? 'Excellent' : acc >= 50 ? 'Good effort' : 'Keep going'}
               </Pill>
             </div>
           </div>
 
-          {newBadges.length > 0 && (
+          {newBadges.length > 0 && !benchmarkEarned && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -129,8 +169,16 @@ export default function QuestionRunner({ questions, mode, title, timed, onComple
             </motion.div>
           )}
 
-          <a href="/app" className="btn-primary px-7 py-3 inline-flex">
-            Back to dashboard <ArrowRight size={16} />
+          <a
+            href={benchmarkEarned ? '/app' : '/app/evaluation'}
+            className={`px-7 py-3 inline-flex rounded-xl font-semibold items-center gap-2 transition ${
+              benchmarkEarned
+                ? 'bg-white text-brand-600 hover:bg-white/90 shadow-lg'
+                : 'btn-primary'
+            }`}
+          >
+            {benchmarkEarned ? '🚀 Go to my dashboard' : 'Back to evaluations'}
+            <ArrowRight size={16} />
           </a>
         </div>
       </motion.div>

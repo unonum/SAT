@@ -10,7 +10,7 @@ import type {
   UserData,
 } from './types';
 import { classifyMistake, estimateScore, computeAllMastery } from './adaptive';
-import { evaluateBadges, todayStr, updateStreak, xpForAttempt } from './gamification';
+import { evaluateBadges, todayStr, updateStreak, xpForAttempt, BENCHMARK_XP } from './gamification';
 import { isAdmin, STUDENT_EMAILS } from './auth';
 import { rebuildFromAttempts } from './history';
 import {
@@ -205,12 +205,17 @@ export const useStore = create<AppState>()(
         if (email) void pushAttempt(email, attempt);
       },
 
-      finishSession: (_mode, accuracy) => {
+      finishSession: (mode, accuracy) => {
         const s = get();
         const mastery = computeAllMastery(s.attempts);
         const badges = evaluateBadges(s.gamification, s.attempts, mastery, accuracy);
         const newBadges = badges.filter((b) => !s.gamification.badges.includes(b));
-        const gamification = { ...s.gamification, badges };
+        // Award XP burst when the benchmark badge is newly earned this session.
+        const benchmarkJustEarned = newBadges.includes('benchmark-crusher');
+        const evalModes: string[] = ['evaluation-1', 'evaluation-2', 'evaluation-3'];
+        const isEval = (evalModes as string[]).includes(mode);
+        const xpBonus = benchmarkJustEarned && isEval ? BENCHMARK_XP : 0;
+        const gamification = { ...s.gamification, badges, xp: s.gamification.xp + xpBonus };
         set((st) => ({ gamification, profiles: snapshotProfiles({ ...st, gamification }) }));
         return newBadges;
       },
