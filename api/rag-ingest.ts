@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureRagSchema, upsertChunk, listSources } from './_lib/turso';
 
 // Raise the body-parser limit so base64-encoded files don't hit a 413.
-export const config = { api: { bodyParser: { sizeLimit: '20mb' } } };
+export const config = { api: { bodyParser: { sizeLimit: '200mb' } } };
 
 async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   if (filetype === 'pdf') {
