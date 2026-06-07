@@ -5,16 +5,54 @@ export async function ingestFile(
   filetype: string,
   base64data: string
 ): Promise<{ ok: boolean; chunks: number }> {
-  const resp = await fetch('/api/rag-ingest', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, filetype, data: base64data }),
+  return ingestFileWithProgress(filename, filetype, base64data);
+}
+
+export function ingestFileWithProgress(
+  filename: string,
+  filetype: string,
+  base64data: string,
+  onProgress?: (pct: number) => void
+): Promise<{ ok: boolean; chunks: number }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/rag-ingest');
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        // Upload phase: 0–90%, server processing: 90–100%
+        onProgress(Math.round((e.loaded / e.total) * 90));
+      }
+    });
+
+    xhr.upload.addEventListener('load', () => {
+      onProgress?.(90);
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(100);
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error('Invalid response from server'));
+        }
+      } else {
+        try {
+          const err = JSON.parse(xhr.responseText);
+          reject(new Error((err as { error?: string }).error ?? `Server error ${xhr.status}`));
+        } catch {
+          reject(new Error(`Server error ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+    xhr.send(JSON.stringify({ filename, filetype, data: base64data }));
   });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error((err as { error?: string }).error ?? 'Ingest failed');
-  }
-  return resp.json();
 }
 
 export async function generateRagQuestions(

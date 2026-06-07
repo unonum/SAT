@@ -4,7 +4,7 @@ import {
   Upload, Loader2, CheckCircle2, XCircle, Trash2, ChevronDown, ChevronUp,
   RefreshCw, Database,
 } from 'lucide-react';
-import { ingestFile, generateRagQuestions, fetchRagQuestions, deleteRagQuestion, listSources } from '@/lib/ragClient';
+import { ingestFileWithProgress, generateRagQuestions, fetchRagQuestions, deleteRagQuestion, listSources } from '@/lib/ragClient';
 import type { Question } from '@/lib/types';
 import { TOPICS } from '@/lib/topics';
 
@@ -15,6 +15,7 @@ interface FileEntry {
   status: 'pending' | 'processing' | 'done' | 'error';
   message?: string;
   chunks?: number;
+  progress?: number; // 0–100
 }
 
 interface Source {
@@ -92,23 +93,43 @@ function UploadTab() {
       if (files[i].status !== 'pending') continue;
       setFiles((prev) => {
         const next = [...prev];
-        next[i] = { ...next[i], status: 'processing', message: 'Extracting text → embedding → storing…' };
+        next[i] = { ...next[i], status: 'processing', progress: 0, message: 'Reading file…' };
         return next;
       });
       try {
         const base64 = await readAsBase64(files[i].file);
-        const filetype = getFileType(files[i].file.name);
-        const result = await ingestFile(files[i].file.name, filetype, base64);
         setFiles((prev) => {
           const next = [...prev];
-          next[i] = { ...next[i], status: 'done', chunks: result.chunks, message: `✓ ${result.chunks} chunks indexed` };
+          next[i] = { ...next[i], progress: 2, message: 'Uploading…' };
+          return next;
+        });
+        const filetype = getFileType(files[i].file.name);
+        const result = await ingestFileWithProgress(
+          files[i].file.name,
+          filetype,
+          base64,
+          (pct) => {
+            setFiles((prev) => {
+              const next = [...prev];
+              next[i] = {
+                ...next[i],
+                progress: pct,
+                message: pct < 90 ? `Uploading… ${pct}%` : 'Processing on server…',
+              };
+              return next;
+            });
+          }
+        );
+        setFiles((prev) => {
+          const next = [...prev];
+          next[i] = { ...next[i], status: 'done', progress: 100, chunks: result.chunks, message: `✓ ${result.chunks} chunks indexed` };
           return next;
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setFiles((prev) => {
           const next = [...prev];
-          next[i] = { ...next[i], status: 'error', message: msg };
+          next[i] = { ...next[i], status: 'error', progress: undefined, message: msg };
           return next;
         });
       }
@@ -149,17 +170,43 @@ function UploadTab() {
         <Card>
           <div className="space-y-2">
             {files.map((entry, idx) => (
-              <div key={idx} className="flex items-center gap-3 text-sm">
-                {entry.status === 'pending' && <div className="h-4 w-4 rounded-full bg-slate-300" />}
-                {entry.status === 'processing' && <Loader2 size={16} className="animate-spin text-brand-500" />}
-                {entry.status === 'done' && <CheckCircle2 size={16} className="text-green-500" />}
-                {entry.status === 'error' && <XCircle size={16} className="text-red-500" />}
-                <span className="font-medium truncate max-w-xs">{entry.file.name}</span>
-                <span className="text-muted text-xs">({(entry.file.size / 1024).toFixed(0)} KB)</span>
-                {entry.message && (
-                  <span className={`text-xs ml-auto ${entry.status === 'error' ? 'text-red-500' : 'text-muted'}`}>
-                    {entry.message}
+              <div key={idx} className="space-y-1">
+                <div className="flex items-center gap-3 text-sm">
+                  {entry.status === 'pending' && <div className="h-4 w-4 rounded-full bg-slate-300 flex-shrink-0" />}
+                  {entry.status === 'processing' && <Loader2 size={16} className="animate-spin text-brand-500 flex-shrink-0" />}
+                  {entry.status === 'done' && <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />}
+                  {entry.status === 'error' && <XCircle size={16} className="text-red-500 flex-shrink-0" />}
+                  <span className="font-medium truncate max-w-xs">{entry.file.name}</span>
+                  <span className="text-muted text-xs flex-shrink-0">
+                    ({entry.file.size >= 1024 * 1024
+                      ? `${(entry.file.size / (1024 * 1024)).toFixed(1)} MB`
+                      : `${(entry.file.size / 1024).toFixed(0)} KB`})
                   </span>
+                  {entry.message && (
+                    <span className={`text-xs ml-auto flex-shrink-0 ${entry.status === 'error' ? 'text-red-500' : 'text-muted'}`}>
+                      {entry.message}
+                    </span>
+                  )}
+                </div>
+                {entry.status === 'processing' && entry.progress !== undefined && (
+                  <div className="ml-7 flex items-center gap-2">
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          entry.progress >= 90 ? 'bg-amber-400 animate-pulse' : 'bg-brand-500'
+                        }`}
+                        style={{ width: `${entry.progress}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted w-8 text-right">{entry.progress}%</span>
+                  </div>
+                )}
+                {entry.status === 'done' && (
+                  <div className="ml-7">
+                    <div className="flex-1 h-1.5 rounded-full bg-green-200 dark:bg-green-900">
+                      <div className="h-full w-full rounded-full bg-green-500" />
+                    </div>
+                  </div>
                 )}
               </div>
             ))}
