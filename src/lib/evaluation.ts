@@ -32,26 +32,42 @@ export function isEvalMode(mode: PracticeMode | string | null | undefined): bool
   return !!mode && (EVAL_MODES as string[]).includes(mode);
 }
 
-/** Deterministic shuffle (mulberry32) so each test has a stable, distinct order. */
-function seededOrder(seed: number): Question[] {
-  let a = seed >>> 0;
-  const rand = () => {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  const arr = [...QUESTION_BANK];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+/**
+ * Partition the question bank into 3 disjoint evaluation tests with NO repeated
+ * questions across tests. Within each topic the questions are dealt out
+ * round-robin (1st → Test 1, 2nd → Test 2, 3rd → Test 3, …), so every test
+ * gets broad coverage across all skill areas and no question is ever reused.
+ * This makes the three tests a complete, non-overlapping initial assessment.
+ */
+function partitionBank(): Record<1 | 2 | 3, Question[]> {
+  const byTopic = new Map<string, Question[]>();
+  for (const q of QUESTION_BANK) {
+    (byTopic.get(q.topic) ?? byTopic.set(q.topic, []).get(q.topic)!).push(q);
   }
-  return arr;
+  const out: Record<1 | 2 | 3, Question[]> = { 1: [], 2: [], 3: [] };
+  for (const [, qs] of byTopic) {
+    const sorted = [...qs].sort((a, b) => a.id.localeCompare(b.id));
+    sorted.forEach((q, i) => {
+      const test = ((i % 3) + 1) as 1 | 2 | 3;
+      out[test].push(q);
+    });
+  }
+  return out;
 }
 
-/** Build the fixed question set for an evaluation test (full-length). */
+const PARTITION = partitionBank();
+
+/** Build the fixed, non-overlapping question set for an evaluation test. */
 export function buildEvalTest(id: 1 | 2 | 3): Question[] {
-  return seededOrder(id * 99991 + 7);
+  // order by section then topic for a coherent test flow
+  return [...PARTITION[id]].sort((a, b) =>
+    a.section === b.section ? a.topic.localeCompare(b.topic) : a.section.localeCompare(b.section)
+  );
+}
+
+/** Number of questions in a given evaluation test. */
+export function evalTestSize(id: 1 | 2 | 3): number {
+  return PARTITION[id].length;
 }
 
 export interface EvalSession {
@@ -103,6 +119,26 @@ export interface EvalSummary {
   bestScore: number | null;
   firstScore: number | null;
   delta: number | null;
+}
+
+/** How many of the 3 benchmark tests have at least one completed sitting. */
+export function benchmarkProgress(attempts: Attempt[]): { done: number; total: number; complete: boolean } {
+  const done = EVAL_TESTS.filter((t) => attempts.some((a) => a.mode === t.mode)).length;
+  return { done, total: EVAL_TESTS.length, complete: done >= EVAL_TESTS.length };
+}
+
+/** True once all 3 evaluation benchmark tests have been attempted. */
+export function evaluationsComplete(attempts: Attempt[]): boolean {
+  return benchmarkProgress(attempts).complete;
+}
+
+/** Baseline benchmark score = average of each test's first-sitting score. */
+export function benchmarkBaseline(attempts: Attempt[]): number | null {
+  const firsts = EVAL_TESTS
+    .map((t) => evalSessions(attempts, t.mode)[0]?.score)
+    .filter((s): s is number => typeof s === 'number');
+  if (!firsts.length) return null;
+  return Math.round(firsts.reduce((a, b) => a + b, 0) / firsts.length);
 }
 
 export function evalSummary(attempts: Attempt[], mode: PracticeMode): EvalSummary {

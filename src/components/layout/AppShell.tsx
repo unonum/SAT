@@ -8,10 +8,11 @@ import {
   LayoutDashboard, Dumbbell, Target, CalendarCheck, FileText,
   AlertTriangle, LineChart, Database, Settings, Sun, Moon,
   Flame, Menu, X, LogOut, Sparkles, ChevronRight, Crown,
-  ClipboardCheck,
+  ClipboardCheck, Lock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isAdmin } from '@/lib/auth';
+import { benchmarkProgress } from '@/lib/evaluation';
 import SyncIndicator from '@/components/SyncIndicator';
 
 const STUDENT_NAV = [
@@ -32,7 +33,7 @@ const ADMIN_NAV = [
 ];
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { user, theme, setTheme, gamification, logout } = useStore();
+  const { user, theme, setTheme, gamification, logout, attempts } = useStore();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const lvl = levelFromXp(gamification.xp);
@@ -40,6 +41,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const admin = isAdmin(user?.email);
   const NAV = admin ? ADMIN_NAV : STUDENT_NAV;
   const homeLink = admin ? '/app/team' : '/app';
+  const bench = benchmarkProgress(attempts);
+  // Students must finish the 3 benchmark evaluations before other panels unlock.
+  const frozen = !admin && !bench.complete;
+  const ALWAYS_OPEN = ['/app/settings'];
 
   const SidebarContent = () => (
     <div className="flex h-full flex-col">
@@ -79,38 +84,61 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <span className="relative grid h-7 w-7 place-items-center rounded-lg bg-white/20">
               <ClipboardCheck size={16} />
             </span>
-            <span className="relative flex-1">Start Evaluation</span>
-            <span className="relative rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">3 tests</span>
+            <span className="relative flex-1">{bench.complete ? 'Evaluations' : 'Start Evaluation'}</span>
+            <span className="relative rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">
+              {bench.complete ? '✓ Done' : `${bench.done}/${bench.total}`}
+            </span>
           </NavLink>
+          {frozen && (
+            <p className="px-1 pt-1.5 text-[11px] text-muted">
+              Finish all {bench.total} benchmark tests to unlock your dashboard.
+            </p>
+          )}
         </div>
       )}
 
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 px-3 overflow-y-auto pb-2">
-        {NAV.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            onClick={() => setOpen(false)}
-            className={({ isActive }) =>
-              cn(
-                'group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 relative',
-                isActive
-                  ? 'bg-gradient-brand text-white shadow-glow'
-                  : 'text-muted hover:text-[rgb(var(--text))] hover:bg-brand-500/8 dark:hover:bg-brand-500/10'
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
+        {NAV.map((item) => {
+          const locked = frozen && !ALWAYS_OPEN.includes(item.to);
+          if (locked) {
+            return (
+              <div
+                key={item.to}
+                title="Locked until your benchmark evaluations are complete"
+                className="group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted/50 cursor-not-allowed select-none"
+              >
                 <item.icon size={17} />
                 <span className="flex-1">{item.label}</span>
-                {isActive && <ChevronRight size={14} className="opacity-60" />}
-              </>
-            )}
-          </NavLink>
-        ))}
+                <Lock size={13} className="opacity-60" />
+              </div>
+            );
+          }
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              onClick={() => setOpen(false)}
+              className={({ isActive }) =>
+                cn(
+                  'group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 relative',
+                  isActive
+                    ? 'bg-gradient-brand text-white shadow-glow'
+                    : 'text-muted hover:text-[rgb(var(--text))] hover:bg-brand-500/8 dark:hover:bg-brand-500/10'
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <item.icon size={17} />
+                  <span className="flex-1">{item.label}</span>
+                  {isActive && <ChevronRight size={14} className="opacity-60" />}
+                </>
+              )}
+            </NavLink>
+          );
+        })}
       </nav>
 
       {/* XP bar (students only) */}

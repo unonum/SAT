@@ -3,12 +3,14 @@ import { useStore } from '@/lib/store';
 import { selectAdaptiveQuestions } from '@/lib/adaptive';
 import { QUESTION_BANK } from '@/lib/questionBank';
 import QuestionRunner from '@/components/QuestionRunner';
-import { Card, SectionTitle } from '@/components/ui';
-import { FileText, Clock, Target, ListChecks, Play } from 'lucide-react';
+import { Card, SectionTitle, Pill } from '@/components/ui';
+import { FileText, Clock, Target, ListChecks, Play, Rocket } from 'lucide-react';
+import { benchmarkBaseline } from '@/lib/evaluation';
 import type { Question } from '@/lib/types';
 
 export default function MockTest() {
   const { attempts } = useStore();
+  const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
 
   const start = () => {
@@ -28,6 +30,12 @@ export default function MockTest() {
   return (
     <div className="space-y-6">
       <SectionTitle title="Mock Test" subtitle="A full-length, timed simulation under test conditions." />
+
+      {baseline !== null && (
+        <Pill tone="success">
+          <Rocket size={12} /> Building on your benchmark baseline of {baseline} — improvements are tracked against it.
+        </Pill>
+      )}
 
       <Card className="text-center py-10">
         <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-brand-500 to-accent-500 text-white">

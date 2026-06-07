@@ -415,6 +415,38 @@ export const QUESTION_BANK: Question[] = [
 
   // ---------------- VOCABULARY IN CONTEXT ----------------
   {
+    id: 'read-3',
+    topic: 'reading-comprehension',
+    subtopic: 'Purpose',
+    section: 'Reading & Writing',
+    difficulty: 'medium',
+    passage:
+      'Early telephone operators were almost all women, hired because companies believed their voices sounded more courteous to callers. The job demanded speed, patience, and an encyclopedic memory for connections — skills that, the author notes, were rarely credited as technical at the time.',
+    prompt: 'The author mentions the operators’ skills mainly to:',
+    choices: [
+      { id: 'A', text: 'argue that women preferred telephone work to other jobs.' },
+      { id: 'B', text: 'suggest the work was more skilled than it was recognized to be.' },
+      { id: 'C', text: 'explain how telephones were physically built.' },
+      { id: 'D', text: 'prove that men could not do the same job.' },
+    ],
+    correct: 'B',
+    parTimeSec: 80,
+    explanation: {
+      correctWhy: 'The author stresses skills "rarely credited as technical," pointing to undervalued expertise — exactly B.',
+      fastStrategy: 'Purpose questions ask WHY a detail appears; tie it to the author’s point, not the literal fact.',
+      simplerView: 'The skills line exists to say: this job was harder/smarter than people admitted.',
+      trapNote: 'Choice D twists "almost all women" into a claim the passage never makes.',
+      timeTrick: 'Reread the sentence just before the detail — it usually states the point the detail supports.',
+      whyWrong: {
+        A: 'Preference is never discussed.',
+        C: 'The passage is about the work, not telephone hardware.',
+        D: 'An overreach the text does not support.',
+      },
+    },
+  },
+
+  // ---------------- VOCABULARY IN CONTEXT ----------------
+  {
     id: 'vocab-1',
     topic: 'vocabulary-in-context',
     subtopic: 'Word choice',
@@ -471,6 +503,37 @@ export const QUESTION_BANK: Question[] = [
         A: 'Haphazard means disordered — the opposite of logical flow.',
         C: 'Ornate refers to elaborate decoration, not logic.',
         D: 'Tentative means hesitant/uncertain, not well-structured.',
+      },
+    },
+  },
+
+  {
+    id: 'vocab-3',
+    topic: 'vocabulary-in-context',
+    subtopic: 'Tone',
+    section: 'Reading & Writing',
+    difficulty: 'medium',
+    passage:
+      'Although the startup’s early demo was rough, investors found the founder’s vision so ______ that they funded it on the spot, convinced the polish would come later.',
+    prompt: 'Which choice best completes the text?',
+    choices: [
+      { id: 'A', text: 'compelling' },
+      { id: 'B', text: 'tedious' },
+      { id: 'C', text: 'ambiguous' },
+      { id: 'D', text: 'derivative' },
+    ],
+    correct: 'A',
+    parTimeSec: 60,
+    explanation: {
+      correctWhy: 'Investors funded it "on the spot" despite a rough demo — the vision must have been compelling (persuasive, attractive).',
+      fastStrategy: 'The result (instant funding) tells you the blank is strongly positive.',
+      simplerView: 'They paid immediately → the idea grabbed them → compelling.',
+      trapNote: 'The word "Although" sets up a contrast: rough demo BUT persuasive vision.',
+      timeTrick: 'Let the consequence in the sentence fix the blank’s charge (+ or −) before testing words.',
+      whyWrong: {
+        B: 'Tedious is negative; no one funds the tedious on the spot.',
+        C: 'Ambiguous vision would not inspire immediate confidence.',
+        D: 'Derivative (unoriginal) contradicts the investors’ enthusiasm.',
       },
     },
   },
@@ -535,6 +598,36 @@ export const QUESTION_BANK: Question[] = [
     },
   },
 
+  {
+    id: 'gram-3',
+    topic: 'grammar',
+    subtopic: 'Pronoun-antecedent agreement',
+    section: 'Reading & Writing',
+    difficulty: 'medium',
+    passage: 'Each of the volunteers submitted ______ timesheet before leaving the site.',
+    prompt: 'Which choice conforms to the conventions of Standard English?',
+    choices: [
+      { id: 'A', text: 'their' },
+      { id: 'B', text: 'they’re' },
+      { id: 'C', text: 'his or her' },
+      { id: 'D', text: 'there' },
+    ],
+    correct: 'C',
+    parTimeSec: 55,
+    explanation: {
+      correctWhy: '"Each" is singular, so it takes a singular pronoun — "his or her" agrees in number.',
+      fastStrategy: 'Words like each, every, either, neither are singular — match them with singular pronouns.',
+      simplerView: 'Each = one at a time → singular → his or her.',
+      trapNote: 'Choice A ("their") is the everyday-speech trap; the SAT still tests formal singular agreement here.',
+      timeTrick: 'Spot the indefinite pronoun first; "each/every" almost always signals singular.',
+      whyWrong: {
+        A: 'Plural pronoun for a singular antecedent ("each").',
+        B: '"They’re" = "they are," a contraction, not a possessive.',
+        D: '"There" indicates place, not possession.',
+      },
+    },
+  },
+
   // ---------------- RHETORIC & EXPRESSION ----------------
   {
     id: 'rhet-1',
@@ -592,6 +685,36 @@ export const QUESTION_BANK: Question[] = [
         A: 'Repeats the same idea three ways.',
         C: 'Wordy and circular ("repetition that repeated").',
         D: 'Vague ("a thing") and repetitive.',
+      },
+    },
+  },
+  {
+    id: 'rhet-3',
+    topic: 'rhetoric-expression',
+    subtopic: 'Sentence combining',
+    section: 'Reading & Writing',
+    difficulty: 'medium',
+    passage:
+      'A researcher wants to combine: "The bridge was built in 1932. It is still the longest of its kind in the region."',
+    prompt: 'Which choice most effectively combines the two sentences?',
+    choices: [
+      { id: 'A', text: 'Built in 1932, the bridge is still the longest of its kind in the region.' },
+      { id: 'B', text: 'The bridge was built in 1932, and it is still the longest of its kind in the region, too.' },
+      { id: 'C', text: 'The bridge, which was built in 1932, it is still the longest of its kind in the region.' },
+      { id: 'D', text: 'The bridge was built in 1932; the longest of its kind in the region still.' },
+    ],
+    correct: 'A',
+    parTimeSec: 60,
+    explanation: {
+      correctWhy: 'The introductory modifier "Built in 1932" attaches cleanly to "the bridge," giving a tight, correct combination.',
+      fastStrategy: 'Prefer the option that subordinates one idea into a phrase rather than stacking clauses.',
+      simplerView: 'Turn the first sentence into a short opener: "Built in 1932, the bridge is still...".',
+      trapNote: 'Choice C adds a redundant "it" after the relative clause — ungrammatical.',
+      timeTrick: 'Cross out options with doubled subjects ("which was... it is") or tacked-on words ("too," "still" misplaced).',
+      whyWrong: {
+        B: 'Grammatically OK but wordy, and "too" is redundant.',
+        C: 'Doubles the subject ("which was... it is").',
+        D: 'The second half is a fragment with awkward word order.',
       },
     },
   },

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useStore } from '@/lib/store';
 import { isAdmin } from '@/lib/auth';
+import { evaluationsComplete } from '@/lib/evaluation';
 import AppShell from '@/components/layout/AppShell';
 import type { ReactNode } from 'react';
 
@@ -21,14 +22,21 @@ import TeamDashboard from '@/pages/TeamDashboard';
 import Admin from '@/pages/Admin';
 import Settings from '@/pages/Settings';
 
+// Panels a student may reach before the benchmark evaluations are complete.
+const UNLOCKED_BEFORE_BENCHMARK = ['/app/evaluation', '/app/settings'];
+
 function Protected({ children }: { children: ReactNode }) {
   const user = useStore((s) => s.user);
-  const hasDiagnostic = useStore((s) => s.hasDiagnostic);
+  const attempts = useStore((s) => s.attempts);
   const location = useLocation();
   if (!user) return <Navigate to="/login" replace />;
-  // Admins don't take the diagnostic; students must before using the app.
-  if (!isAdmin(user.email) && !hasDiagnostic && location.pathname !== '/assessment') {
-    return <Navigate to="/assessment" replace />;
+  // Students must finish the 3 benchmark evaluations before the rest unlocks.
+  if (
+    !isAdmin(user.email) &&
+    !evaluationsComplete(attempts) &&
+    !UNLOCKED_BEFORE_BENCHMARK.includes(location.pathname)
+  ) {
+    return <Navigate to="/app/evaluation" replace />;
   }
   return <AppShell>{children}</AppShell>;
 }

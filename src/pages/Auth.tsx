@@ -52,8 +52,9 @@ export default function Auth({ signup }: { signup?: boolean }) {
     }
 
     setBusy(false);
-    const hasDiag = useStore.getState().hasDiagnostic;
-    navigate(hasDiag ? '/app' : '/assessment');
+    // Students land in the app; the route guard sends them to the benchmark
+    // evaluations first if those aren't complete yet.
+    navigate('/app');
   };
 
   return (
