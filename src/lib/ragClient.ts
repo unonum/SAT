@@ -1,5 +1,29 @@
 import type { Question, TopicId } from './types';
 
+/** Extract text from a PDF file in the browser using pdf.js to avoid Vercel's 4.5MB body limit. */
+async function extractPdfTextInBrowser(file: File): Promise<string> {
+  const pdfjsLib = await import('pdfjs-dist');
+  // Point the worker at the bundled worker file served from node_modules
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+      'pdfjs-dist/build/pdf.worker.min.mjs',
+      import.meta.url
+    ).toString();
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const parts: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item) => ('str' in item ? item.str : ''))
+      .join(' ');
+    parts.push(pageText);
+  }
+  return parts.join('\n');
+}
+
 export async function ingestFile(
   filename: string,
   filetype: string,
@@ -8,12 +32,26 @@ export async function ingestFile(
   return ingestFileWithProgress(filename, filetype, base64data);
 }
 
-export function ingestFileWithProgress(
+/** Ingest a file. For PDFs, extracts text client-side first to avoid Vercel's 4.5MB body limit. */
+export async function ingestFileWithProgress(
   filename: string,
   filetype: string,
   base64data: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  originalFile?: File
 ): Promise<{ ok: boolean; chunks: number }> {
+  let body: string;
+
+  if (filetype === 'pdf' && originalFile) {
+    // Extract text in-browser (avoids sending the raw PDF binary over the wire)
+    onProgress?.(5);
+    const text = await extractPdfTextInBrowser(originalFile);
+    onProgress?.(20);
+    body = JSON.stringify({ filename, filetype, text });
+  } else {
+    body = JSON.stringify({ filename, filetype, data: base64data });
+  }
+
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/rag-ingest');
@@ -21,8 +59,8 @@ export function ingestFileWithProgress(
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable && onProgress) {
-        // Upload phase: 0–90%, server processing: 90–100%
-        onProgress(Math.round((e.loaded / e.total) * 90));
+        const uploadPct = Math.round((e.loaded / e.total) * 70);
+        onProgress(filetype === 'pdf' ? 20 + uploadPct : uploadPct);
       }
     });
 
@@ -51,7 +89,7 @@ export function ingestFileWithProgress(
     xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
 
-    xhr.send(JSON.stringify({ filename, filetype, data: base64data }));
+    xhr.send(body);
   });
 }
 

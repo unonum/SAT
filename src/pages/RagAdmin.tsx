@@ -97,13 +97,15 @@ function UploadTab() {
         return next;
       });
       try {
-        const base64 = await readAsBase64(files[i].file);
+        const filetype = getFileType(files[i].file.name);
+        const isPdf = filetype === 'pdf';
+        // For PDFs: client-side extraction, no need to base64 the whole file
+        const base64 = isPdf ? '' : await readAsBase64(files[i].file);
         setFiles((prev) => {
           const next = [...prev];
-          next[i] = { ...next[i], progress: 2, message: 'Uploading…' };
+          next[i] = { ...next[i], progress: 2, message: isPdf ? 'Extracting text from PDF…' : 'Uploading…' };
           return next;
         });
-        const filetype = getFileType(files[i].file.name);
         const result = await ingestFileWithProgress(
           files[i].file.name,
           filetype,
@@ -111,14 +113,16 @@ function UploadTab() {
           (pct) => {
             setFiles((prev) => {
               const next = [...prev];
-              next[i] = {
-                ...next[i],
-                progress: pct,
-                message: pct < 90 ? `Uploading… ${pct}%` : 'Processing on server…',
-              };
+              const msg = pct < 20
+                ? 'Extracting text from PDF…'
+                : pct < 90
+                ? `Uploading… ${pct}%`
+                : 'Embedding & storing on server…';
+              next[i] = { ...next[i], progress: pct, message: msg };
               return next;
             });
-          }
+          },
+          files[i].file
         );
         setFiles((prev) => {
           const next = [...prev];

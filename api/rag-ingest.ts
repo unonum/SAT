@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureRagSchema, upsertChunk, listSources } from './_lib/turso';
 
-// Raise the body-parser limit so base64-encoded files don't hit a 413.
-export const config = { api: { bodyParser: { sizeLimit: '200mb' } } };
+// Images can still be large; PDFs are now extracted client-side.
+export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
 
 async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   if (filetype === 'pdf') {
@@ -101,14 +101,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { filename, filetype, data: base64data } = req.body ?? {};
-  if (!filename || !filetype || !base64data) {
-    return res.status(400).json({ error: 'filename, filetype, and data are required' });
+  const { filename, filetype, data: base64data, text: preExtractedText } = req.body ?? {};
+  if (!filename || !filetype || (!base64data && !preExtractedText)) {
+    return res.status(400).json({ error: 'filename, filetype, and either data or text are required' });
   }
 
   try {
-    const buffer = Buffer.from(base64data, 'base64');
-    const text = await extractText(filetype, buffer);
+    // PDFs are extracted client-side and sent as plain text to stay under Vercel's 4.5MB body limit.
+    const text = preExtractedText
+      ? String(preExtractedText)
+      : await extractText(filetype, Buffer.from(base64data, 'base64'));
 
     if (!text || text.trim().length === 0) {
       return res.status(400).json({ error: 'No text could be extracted from the file' });
