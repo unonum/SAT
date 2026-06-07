@@ -132,6 +132,12 @@ export default function TeamDashboard() {
                     {s.data.attempts.length > 0
                       ? <Pill tone="success">Live</Pill>
                       : <Pill tone="muted">No activity yet</Pill>}
+                    {(() => {
+                      const days = inactiveDays(s.lastActive);
+                      return days !== null && days >= 3
+                        ? <Pill tone="danger"><AlertTriangle size={11} /> Inactive {days}d</Pill>
+                        : null;
+                    })()}
                   </div>
                   <div className="text-xs text-muted truncate">{s.email}</div>
                 </div>
@@ -151,6 +157,9 @@ export default function TeamDashboard() {
                 <Mini label="Questions" value={String(s.data.attempts.length)} tone="" />
                 <Mini label="Streak" value={`${s.data.gamification.streak}🔥`} tone="text-orange-500" />
               </div>
+
+              {/* Score trend sparkline */}
+              <ScoreSparkline attempts={s.data.attempts} color={barColors[i % barColors.length]} />
 
               {/* Where they lag */}
               <div className="mb-2 text-xs font-bold uppercase tracking-wide text-muted">Where they lag most</div>
@@ -223,6 +232,50 @@ export default function TeamDashboard() {
 
       {/* Deep analytics (real data) */}
       {totalAttempts > 0 && <ClassAnalytics students={students} colors={barColors} />}
+    </div>
+  );
+}
+
+/** Whole days since last activity (null if never active). */
+function inactiveDays(lastActive: number | null): number | null {
+  if (!lastActive) return null;
+  return Math.floor((Date.now() - lastActive) / 86400000);
+}
+
+/** Compact score-over-time sparkline for a student card. */
+function ScoreSparkline({ attempts, color }: { attempts: StudentView['data']['attempts']; color: string }) {
+  const series = scoreHistory(attempts);
+  if (series.length < 2) {
+    return (
+      <div className="mb-4 rounded-xl border border-dashed border-[rgb(var(--border))] py-3 text-center text-xs text-muted">
+        Score trend appears after 2+ active days
+      </div>
+    );
+  }
+  const first = series[0].score;
+  const last = series[series.length - 1].score;
+  const delta = last - first;
+  const up = delta >= 0;
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="font-bold uppercase tracking-wide text-muted">Score trend</span>
+        <span className={`flex items-center gap-1 font-semibold ${up ? 'text-success' : 'text-danger'}`}>
+          <TrendingUp size={12} className={up ? '' : 'rotate-180'} />
+          {up ? '+' : ''}{delta} ({first}→{last})
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={44}>
+        <LineChart data={series} margin={{ top: 4, bottom: 4, left: 2, right: 2 }}>
+          <Tooltip
+            contentStyle={{ borderRadius: 10, fontSize: 11, padding: '4px 8px' }}
+            labelFormatter={(l) => `Day ${l}`}
+            formatter={(v) => [v as number, 'Score']}
+          />
+          <Line type="monotone" dataKey="score" stroke={color} strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }
