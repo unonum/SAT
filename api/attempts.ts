@@ -38,19 +38,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (attempts.length === 0) return res.status(200).json({ inserted: 0 });
 
       const stmts = attempts.map((a: any) => ({
-        sql: `INSERT INTO attempts
+        sql: `INSERT OR REPLACE INTO attempts
           (id, user_email, question_id, topic, difficulty, selected, correct, time_sec, confidence, mistake_category, retried, mode, ts)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET
-            correct=excluded.correct, time_sec=excluded.time_sec,
-            mistake_category=excluded.mistake_category, retried=excluded.retried`,
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         args: [
           a.id, e, a.question_id, a.topic, a.difficulty, a.selected ?? null,
           a.correct ? 1 : 0, Math.round(a.time_sec ?? 0), a.confidence ?? null,
           a.mistake_category ?? null, a.retried ? 1 : 0, a.mode ?? null, a.ts,
         ],
       }));
-      await db.batch(stmts, 'write');
+      // libSQL batch has a statement limit; chunk into groups of 100
+      for (let i = 0; i < stmts.length; i += 100) {
+        await db.batch(stmts.slice(i, i + 100), 'write');
+      }
       return res.status(200).json({ inserted: attempts.length });
     }
 

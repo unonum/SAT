@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureRagSchema, upsertChunk, listSources } from './_lib/turso';
 
-export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
+// Raise the body-parser limit so base64-encoded files don't hit a 413.
+export const config = { api: { bodyParser: { sizeLimit: '20mb' } } };
 
 async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   if (filetype === 'pdf') {
@@ -79,7 +80,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  await ensureRagSchema();
+  try {
+    await ensureRagSchema();
+  } catch (schemaErr: unknown) {
+    const msg = schemaErr instanceof Error ? schemaErr.message : String(schemaErr);
+    console.error('[rag-ingest] schema init failed:', msg);
+    return res.status(500).json({ error: `DB init failed: ${msg}` });
+  }
 
   // GET ?list=true — return list of sources
   if (req.method === 'GET') {

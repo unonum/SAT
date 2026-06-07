@@ -3,21 +3,19 @@ import { createClient, type Client } from '@libsql/client';
 // Server-side Turso connection. The auth token is read from env vars and
 // never reaches the browser — the SPA only ever talks to /api/*.
 let client: Client | null = null;
-let schemaReady = false;
-let ragSchemaReady = false;
 
 export function getClient(): Client {
   if (client) return client;
   const url = process.env.TURSO_DATABASE_URL;
   const authToken = process.env.TURSO_AUTH_TOKEN;
-  if (!url) throw new Error('TURSO_DATABASE_URL is not set');
+  if (!url) throw new Error('TURSO_DATABASE_URL is not set in environment variables');
+  if (!authToken) throw new Error('TURSO_AUTH_TOKEN is not set in environment variables');
   client = createClient({ url, authToken });
   return client;
 }
 
 /** Create the attempts table on first use (idempotent). */
 export async function ensureSchema(): Promise<void> {
-  if (schemaReady) return;
   const db = getClient();
   await db.execute(`
     CREATE TABLE IF NOT EXISTS attempts (
@@ -37,12 +35,10 @@ export async function ensureSchema(): Promise<void> {
     )
   `);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_email, ts)`);
-  schemaReady = true;
 }
 
 /** Create the RAG tables on first use (idempotent). */
 export async function ensureRagSchema(): Promise<void> {
-  if (ragSchemaReady) return;
   const db = getClient();
   await db.execute(`
     CREATE TABLE IF NOT EXISTS rag_chunks (
@@ -74,7 +70,6 @@ export async function ensureRagSchema(): Promise<void> {
     )
   `);
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_rag_questions_topic ON rag_questions(topic, difficulty)`);
-  ragSchemaReady = true;
 }
 
 export interface RagQuestionRow {
