@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso';
+import { ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso.js';
 
 export const config = { maxDuration: 300, api: { bodyParser: { sizeLimit: '10mb' } } };
 

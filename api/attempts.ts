@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getClient, ensureSchema } from './_lib/turso';
+import { getClient, ensureSchema } from './_lib/turso.js';
 
 // Single endpoint for the attempts history:
 //   GET    /api/attempts?email=x            -> rows for one user

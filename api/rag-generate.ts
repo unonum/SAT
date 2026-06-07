@@ -5,7 +5,7 @@ import {
   upsertRagQuestion,
   cosineSimilarity,
   type RagQuestionRow,
-} from './_lib/turso';
+} from './_lib/turso.js';
 
 export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
 

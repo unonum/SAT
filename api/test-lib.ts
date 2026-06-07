@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getClient } from './_lib/turso';
+import { getClient } from './_lib/turso.js';
 
 /** Minimal test: does importing _lib/turso crash the function? */
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
