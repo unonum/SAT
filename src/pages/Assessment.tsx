@@ -8,12 +8,22 @@ import { Card } from '@/components/ui';
 import { Target, Gauge, Clock, CheckCircle2, ArrowRight } from 'lucide-react';
 import type { Question } from '@/lib/types';
 
-// One question per topic = full-coverage diagnostic.
+// Full-coverage diagnostic: for every topic, sample across difficulty so we
+// measure both fundamentals (easy/medium) and ceiling (hard). This gives a
+// far stronger first mastery signal than a single question per topic.
 function buildDiagnostic(): Question[] {
-  return TOPICS.flatMap((t) => {
-    const qs = questionsByTopic(t.id);
-    return qs.length ? [qs[Math.floor(qs.length / 2)] ?? qs[0]] : [];
-  });
+  const order = { easy: 0, medium: 1, hard: 2 } as const;
+  const out: Question[] = [];
+  for (const t of TOPICS) {
+    const qs = [...questionsByTopic(t.id)].sort(
+      (a, b) => order[a.difficulty] - order[b.difficulty]
+    );
+    if (!qs.length) continue;
+    // take up to 2 questions spanning the difficulty range (easiest + hardest)
+    if (qs.length === 1) out.push(qs[0]);
+    else out.push(qs[0], qs[qs.length - 1]);
+  }
+  return out;
 }
 
 export default function Assessment() {

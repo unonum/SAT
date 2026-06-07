@@ -6,12 +6,13 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import {
   LayoutDashboard, Dumbbell, Target, CalendarCheck, FileText,
-  AlertTriangle, LineChart, Users, Database, Settings, Sun, Moon,
-  Flame, Menu, X, LogOut, Sparkles, ChevronRight,
+  AlertTriangle, LineChart, Database, Settings, Sun, Moon,
+  Flame, Menu, X, LogOut, Sparkles, ChevronRight, Crown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { isAdmin } from '@/lib/auth';
 
-const NAV = [
+const STUDENT_NAV = [
   { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/app/practice', label: 'Daily Practice', icon: Dumbbell },
   { to: '/app/weakness', label: 'Weakness Lab', icon: Target },
@@ -19,7 +20,11 @@ const NAV = [
   { to: '/app/mock', label: 'Mock Test', icon: FileText },
   { to: '/app/errors', label: 'Error Log', icon: AlertTriangle },
   { to: '/app/report', label: 'Progress Report', icon: LineChart },
-  { to: '/app/parent', label: 'Parent / Tutor', icon: Users },
+  { to: '/app/settings', label: 'Settings', icon: Settings },
+];
+
+const ADMIN_NAV = [
+  { to: '/app/team', label: 'Master Dashboard', icon: Crown, end: true },
   { to: '/app/admin', label: 'Question Bank', icon: Database },
   { to: '/app/settings', label: 'Settings', icon: Settings },
 ];
@@ -30,11 +35,14 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const lvl = levelFromXp(gamification.xp);
   const pct = Math.round((lvl.into / lvl.needed) * 100);
+  const admin = isAdmin(user?.email);
+  const NAV = admin ? ADMIN_NAV : STUDENT_NAV;
+  const homeLink = admin ? '/app/team' : '/app';
 
   const SidebarContent = () => (
     <div className="flex h-full flex-col">
       {/* Logo */}
-      <NavLink to="/app" className="flex items-center gap-3 px-5 py-5" onClick={() => setOpen(false)}>
+      <NavLink to={homeLink} className="flex items-center gap-3 px-5 py-5" onClick={() => setOpen(false)}>
         <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-brand text-white shadow-glow">
           <Target size={20} />
         </div>
@@ -71,27 +79,36 @@ export default function AppShell({ children }: { children: ReactNode }) {
         ))}
       </nav>
 
-      {/* XP bar */}
-      <div className="mx-3 mb-3 rounded-2xl border border-brand-500/20 bg-brand-500/5 dark:bg-brand-500/10 p-3.5">
-        <div className="flex items-center justify-between text-xs mb-2">
-          <span className="flex items-center gap-1.5 font-bold text-brand-600 dark:text-brand-300">
-            <Sparkles size={13} /> Level {lvl.level}
-          </span>
-          <span className="text-muted">{gamification.xp} XP</span>
+      {/* XP bar (students only) */}
+      {admin ? (
+        <div className="mx-3 mb-3 rounded-2xl border border-violet-500/20 bg-violet-500/5 dark:bg-violet-500/10 p-3.5">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-violet-600 dark:text-violet-400">
+            <Crown size={13} /> Admin account
+          </div>
+          <p className="text-xs text-muted mt-1">Monitoring student progress</p>
         </div>
-        <div className="h-1.5 rounded-full bg-brand-500/15 overflow-hidden">
-          <motion.div
-            className="h-full rounded-full bg-gradient-to-r from-brand-500 to-accent-500"
-            initial={{ width: 0 }}
-            animate={{ width: `${pct}%` }}
-            transition={{ duration: 1, ease: 'easeOut' }}
-          />
+      ) : (
+        <div className="mx-3 mb-3 rounded-2xl border border-brand-500/20 bg-brand-500/5 dark:bg-brand-500/10 p-3.5">
+          <div className="flex items-center justify-between text-xs mb-2">
+            <span className="flex items-center gap-1.5 font-bold text-brand-600 dark:text-brand-300">
+              <Sparkles size={13} /> Level {lvl.level}
+            </span>
+            <span className="text-muted">{gamification.xp} XP</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-brand-500/15 overflow-hidden">
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-brand-500 to-accent-500"
+              initial={{ width: 0 }}
+              animate={{ width: `${pct}%` }}
+              transition={{ duration: 1, ease: 'easeOut' }}
+            />
+          </div>
+          <div className="flex items-center gap-1.5 mt-2 text-xs text-muted">
+            <Flame size={12} className="text-orange-400" />
+            <span>{gamification.streak}-day streak</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5 mt-2 text-xs text-muted">
-          <Flame size={12} className="text-orange-400" />
-          <span>{gamification.streak}-day streak</span>
-        </div>
-      </div>
+      )}
     </div>
   );
 
@@ -140,14 +157,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
               Hi, {user?.name?.split(' ')[0] ?? 'Student'} 👋
             </div>
             <div className="text-xs text-muted">
-              Target <span className="font-semibold text-brand-600 dark:text-brand-300">{user?.targetScore ?? 1450}</span> · let's close the gap.
+              {admin ? 'Admin · monitoring your students.' : (
+                <>Target <span className="font-semibold text-brand-600 dark:text-brand-300">{user?.targetScore ?? 1450}</span> · let's close the gap.</>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="chip bg-orange-500/10 text-orange-500 border border-orange-500/20">
-              <Flame size={13} /> {gamification.streak}d
-            </span>
+            {!admin && (
+              <span className="chip bg-orange-500/10 text-orange-500 border border-orange-500/20">
+                <Flame size={13} /> {gamification.streak}d
+              </span>
+            )}
             <button className="btn-ghost h-9 w-9 p-0" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>

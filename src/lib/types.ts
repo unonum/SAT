@@ -106,7 +106,18 @@ export interface DailyStat {
   scoreEstimate: number;
 }
 
-export type Role = 'student' | 'parent';
+export type Role = 'student' | 'parent' | 'admin';
+
+/** Per-account data bundle (one per user, partitioned by email). */
+export interface UserData {
+  user: UserProfile | null;
+  hasDiagnostic: boolean;
+  attempts: Attempt[];
+  gamification: Gamification;
+  daily: DailyStat[];
+  /** true when this is generated sample data, not real activity */
+  seeded?: boolean;
+}
 
 export interface UserProfile {
   name: string;

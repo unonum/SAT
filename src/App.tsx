@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useStore } from '@/lib/store';
+import { isAdmin } from '@/lib/auth';
 import AppShell from '@/components/layout/AppShell';
 import type { ReactNode } from 'react';
 
@@ -15,6 +16,7 @@ import MockTest from '@/pages/MockTest';
 import ErrorLog from '@/pages/ErrorLog';
 import ProgressReport from '@/pages/ProgressReport';
 import ParentDashboard from '@/pages/ParentDashboard';
+import TeamDashboard from '@/pages/TeamDashboard';
 import Admin from '@/pages/Admin';
 import Settings from '@/pages/Settings';
 
@@ -23,10 +25,26 @@ function Protected({ children }: { children: ReactNode }) {
   const hasDiagnostic = useStore((s) => s.hasDiagnostic);
   const location = useLocation();
   if (!user) return <Navigate to="/login" replace />;
-  if (!hasDiagnostic && location.pathname !== '/assessment') {
+  // Admins don't take the diagnostic; students must before using the app.
+  if (!isAdmin(user.email) && !hasDiagnostic && location.pathname !== '/assessment') {
     return <Navigate to="/assessment" replace />;
   }
   return <AppShell>{children}</AppShell>;
+}
+
+/** Admin-only route guard. */
+function AdminOnly({ children }: { children: ReactNode }) {
+  const user = useStore((s) => s.user);
+  if (!user) return <Navigate to="/login" replace />;
+  if (!isAdmin(user.email)) return <Navigate to="/app" replace />;
+  return <AppShell>{children}</AppShell>;
+}
+
+/** Students see their own dashboard; admins are sent to the master dashboard. */
+function HomeRedirect() {
+  const user = useStore((s) => s.user);
+  if (user && isAdmin(user.email)) return <Navigate to="/app/team" replace />;
+  return <Protected><Dashboard /></Protected>;
 }
 
 export default function App() {
@@ -38,7 +56,8 @@ export default function App() {
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/assessment" element={<AssessmentGate />} />
 
-      <Route path="/app" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/app" element={<HomeRedirect />} />
+      <Route path="/app/team" element={<AdminOnly><TeamDashboard /></AdminOnly>} />
       <Route path="/app/practice" element={<Protected><DailyPractice /></Protected>} />
       <Route path="/app/weakness" element={<Protected><Weakness /></Protected>} />
       <Route path="/app/plan" element={<Protected><StudyPlan /></Protected>} />
@@ -46,7 +65,7 @@ export default function App() {
       <Route path="/app/errors" element={<Protected><ErrorLog /></Protected>} />
       <Route path="/app/report" element={<Protected><ProgressReport /></Protected>} />
       <Route path="/app/parent" element={<Protected><ParentDashboard /></Protected>} />
-      <Route path="/app/admin" element={<Protected><Admin /></Protected>} />
+      <Route path="/app/admin" element={<AdminOnly><Admin /></AdminOnly>} />
       <Route path="/app/settings" element={<Protected><Settings /></Protected>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -57,5 +76,6 @@ export default function App() {
 function AssessmentGate() {
   const user = useStore((s) => s.user);
   if (!user) return <Navigate to="/signup" replace />;
+  if (isAdmin(user.email)) return <Navigate to="/app/team" replace />;
   return <Assessment />;
 }
