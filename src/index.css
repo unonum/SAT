@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: 248 250 252;
+    --surface: 255 255 255;
+    --border: 226 232 240;
+    --text: 15 23 42;
+    --muted: 100 116 139;
+  }
+  .dark {
+    --bg: 8 11 22;
+    --surface: 17 22 38;
+    --border: 33 41 64;
+    --text: 226 232 240;
+    --muted: 148 163 184;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply font-sans antialiased;
+    background-color: rgb(var(--bg));
+    color: rgb(var(--text));
+  }
+  ::selection {
+    @apply bg-brand-500/30;
+  }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { @apply bg-slate-300 dark:bg-slate-700 rounded-full; }
+  ::-webkit-scrollbar-track { background: transparent; }
+}
+
+@layer components {
+  .surface {
+    background-color: rgb(var(--surface));
+    border-color: rgb(var(--border));
+  }
+  .text-muted {
+    color: rgb(var(--muted));
+  }
+  .card {
+    @apply surface rounded-2xl border shadow-soft;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700 active:scale-[0.98] shadow-glow;
+  }
+  .btn-ghost {
+    @apply btn border surface hover:bg-slate-50 dark:hover:bg-slate-800/60;
+  }
+  .input {
+    @apply w-full rounded-xl border surface px-4 py-2.5 text-sm outline-none
+           focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 placeholder:text-slate-400;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold;
+  }
+}
+
+.gradient-text {
+  background: linear-gradient(90deg, #3563ff, #06b6d4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.grid-bg {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(53,99,255,0.12) 1px, transparent 0);
+  background-size: 28px 28px;
+}
