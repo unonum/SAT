@@ -11,15 +11,13 @@ import type {
 } from './types';
 import { classifyMistake, estimateScore, computeAllMastery } from './adaptive';
 import { evaluateBadges, todayStr, updateStreak, xpForAttempt } from './gamification';
-import { isAdmin, STUDENT_EMAILS, SAMPLE_SEED_EMAILS } from './auth';
-import { seedStudentProfiles } from './seed';
+import { isAdmin, STUDENT_EMAILS } from './auth';
 import { rebuildFromAttempts } from './history';
 import {
   pushAttempt,
   markRetried,
   fetchAttempts,
   fetchAttemptsForUsers,
-  pushAttemptsBulk,
   isRemoteEnabled,
 } from './db';
 
@@ -58,7 +56,6 @@ interface AppState {
   remoteEnabled: boolean;
   hydrateProfile: (email: string) => Promise<void>;
   hydrateStudents: () => Promise<void>;
-  seedStudentsToDB: () => Promise<void>;
 }
 
 /** Union two attempt lists by id (local + remote), preserving order by ts. */
@@ -97,22 +94,6 @@ function snapshotProfiles(s: AppState): Record<string, UserData> {
   };
 }
 
-/** Ensure the demo student profiles exist with sample data (admin view).
- *  Only SAMPLE_SEED_EMAILS get synthetic data; live-only students appear
- *  on the dashboard once their real (DB-synced) attempts arrive. */
-function ensureSeededStudents(profiles: Record<string, UserData>): Record<string, UserData> {
-  const needsSeed = SAMPLE_SEED_EMAILS.some(
-    (e) => !profiles[e] || profiles[e].attempts.length === 0
-  );
-  if (!needsSeed) return profiles;
-  const seeds = seedStudentProfiles();
-  const merged = { ...profiles };
-  for (const e of SAMPLE_SEED_EMAILS) {
-    if (seeds[e] && (!merged[e] || merged[e].attempts.length === 0)) merged[e] = seeds[e];
-  }
-  return merged;
-}
-
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -149,9 +130,6 @@ export const useStore = create<AppState>()(
           pd = { ...pd, user: { ...(pd.user as UserProfile), name: u.name, role: admin ? 'admin' : 'student' } };
 
           profiles = { ...profiles, [email]: pd };
-
-          // admins get the student sample data populated for the master dashboard
-          if (admin) profiles = ensureSeededStudents(profiles);
 
           return {
             currentEmail: email,
@@ -319,16 +297,6 @@ export const useStore = create<AppState>()(
           }
           return { profiles };
         });
-      },
-
-      // One-time: push the local sample history for both students to the DB.
-      seedStudentsToDB: async () => {
-        if (!isRemoteEnabled) return;
-        const seeds = seedStudentProfiles();
-        for (const email of STUDENT_EMAILS) {
-          await pushAttemptsBulk(email, seeds[email].attempts);
-        }
-        await get().hydrateStudents();
       },
     }),
     {

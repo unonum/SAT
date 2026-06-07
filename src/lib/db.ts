@@ -69,6 +69,34 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface PendingEntry { email: string; payload: ReturnType<typeof toPayload> }
 
+// ── Live sync status (subscribable by the UI) ──
+export type SyncState = 'idle' | 'syncing' | 'pending' | 'offline';
+export interface SyncStatus { state: SyncState; pending: number }
+
+let syncing = false;
+const listeners = new Set<(s: SyncStatus) => void>();
+
+export function getSyncStatus(): SyncStatus {
+  const pending = readPending().length;
+  const state: SyncState = !isRemoteEnabled
+    ? 'offline'
+    : syncing
+    ? 'syncing'
+    : pending > 0
+    ? 'pending'
+    : 'idle';
+  return { state, pending };
+}
+function notify() {
+  const s = getSyncStatus();
+  listeners.forEach((cb) => cb(s));
+}
+export function onSyncChange(cb: (s: SyncStatus) => void): () => void {
+  listeners.add(cb);
+  cb(getSyncStatus());
+  return () => listeners.delete(cb);
+}
+
 function readPending(): PendingEntry[] {
   if (typeof localStorage === 'undefined') return [];
   try {
@@ -84,6 +112,7 @@ function writePending(items: PendingEntry[]) {
   } catch {
     /* storage full / unavailable */
   }
+  notify();
 }
 function enqueuePending(email: string, payloads: ReturnType<typeof toPayload>[]) {
   const items = readPending();
@@ -118,19 +147,26 @@ async function postWithRetry(body: unknown, attempts = 4): Promise<boolean> {
 
 /** Replay any attempts that previously failed to sync. Safe to call often. */
 export async function flushPending(): Promise<void> {
-  if (!isRemoteEnabled) return;
+  if (!isRemoteEnabled || syncing) return;
   const items = readPending();
   if (!items.length) return;
-  // group by email and upsert in one request per user (idempotent by id)
-  const byEmail = new Map<string, ReturnType<typeof toPayload>[]>();
-  for (const it of items) (byEmail.get(it.email) ?? byEmail.set(it.email, []).get(it.email)!).push(it.payload);
+  syncing = true;
+  notify();
+  try {
+    // group by email and upsert in one request per user (idempotent by id)
+    const byEmail = new Map<string, ReturnType<typeof toPayload>[]>();
+    for (const it of items) (byEmail.get(it.email) ?? byEmail.set(it.email, []).get(it.email)!).push(it.payload);
 
-  const stillFailing: PendingEntry[] = [];
-  for (const [email, payloads] of byEmail) {
-    const ok = await postWithRetry({ email, attempts: payloads });
-    if (!ok) for (const payload of payloads) stillFailing.push({ email, payload });
+    const stillFailing: PendingEntry[] = [];
+    for (const [email, payloads] of byEmail) {
+      const ok = await postWithRetry({ email, attempts: payloads });
+      if (!ok) for (const payload of payloads) stillFailing.push({ email, payload });
+    }
+    writePending(stillFailing);
+  } finally {
+    syncing = false;
+    notify();
   }
-  writePending(stillFailing);
 }
 
 /** Write a single attempt. Guaranteed-delivery: queues locally if the network fails. */

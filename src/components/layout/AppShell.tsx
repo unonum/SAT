@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isAdmin } from '@/lib/auth';
+import SyncIndicator from '@/components/SyncIndicator';
 
 const STUDENT_NAV = [
   { to: '/app', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -164,6 +165,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <SyncIndicator />
             {!admin && (
               <span className="chip bg-orange-500/10 text-orange-500 border border-orange-500/20">
                 <Flame size={13} /> {gamification.streak}d

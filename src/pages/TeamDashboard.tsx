@@ -6,7 +6,7 @@ import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 import { computeAllMastery, estimateScore } from '@/lib/adaptive';
 import { generateWeeklyReport, MISTAKE_LABELS } from '@/lib/tutor';
 import { TOPIC_MAP, TOPICS } from '@/lib/topics';
-import { Card, SectionTitle, Pill, Stat, MasteryBar, ProgressRing, EmptyState } from '@/components/ui';
+import { Card, SectionTitle, Pill, Stat, MasteryBar, ProgressRing } from '@/components/ui';
 import { masteryColor, relativeDate, formatTime } from '@/lib/utils';
 import type { UserData, MistakeCategory, TopicId } from '@/lib/types';
 import {
@@ -35,7 +35,6 @@ export default function TeamDashboard() {
   const profiles = useStore((s) => s.profiles);
   const remoteEnabled = useStore((s) => s.remoteEnabled);
   const hydrateStudents = useStore((s) => s.hydrateStudents);
-  const seedStudentsToDB = useStore((s) => s.seedStudentsToDB);
   const [openEmail, setOpenEmail] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
 
@@ -45,8 +44,14 @@ export default function TeamDashboard() {
   }, [remoteEnabled, hydrateStudents]);
 
   const students: StudentView[] = useMemo(() => {
-    return STUDENT_EMAILS.filter((e) => profiles[e]).map((email) => {
-      const data = profiles[email];
+    return STUDENT_EMAILS.map((email) => {
+      const data: UserData = profiles[email] ?? {
+        user: { name: displayName(email), email, role: 'student', targetScore: 1450, studyHoursPerDay: 1, createdAt: Date.now() },
+        hasDiagnostic: false,
+        attempts: [],
+        gamification: { xp: 0, level: 1, streak: 0, lastActiveDate: null, badges: [] },
+        daily: [],
+      };
       const attempts = data.attempts;
       const mastery = computeAllMastery(attempts);
       const score = estimateScore(attempts);
@@ -66,11 +71,7 @@ export default function TeamDashboard() {
     });
   }, [profiles]);
 
-  if (students.length === 0) {
-    return <EmptyState title="No students yet" hint="Student profiles will appear here once they exist." />;
-  }
-
-  const anySample = students.some((s) => s.data.seeded);
+  const totalAttempts = students.reduce((a, s) => a + s.data.attempts.length, 0);
 
   // Cross-student comparison per topic (where each lags)
   const compareData = TOPICS.map((t) => {
@@ -107,20 +108,8 @@ export default function TeamDashboard() {
               {syncing ? 'Syncing…' : 'Refresh'}
             </button>
           )}
-          {remoteEnabled && anySample && (
-            <button
-              className="btn-primary px-3 py-1.5 text-xs"
-              disabled={syncing}
-              onClick={async () => { setSyncing(true); await seedStudentsToDB(); setSyncing(false); }}
-            >
-              Push sample history to DB
-            </button>
-          )}
         </div>
       </div>
-      {anySample && (
-        <Pill tone="warning"><AlertTriangle size={12} /> Showing sample data for students with no synced activity yet</Pill>
-      )}
 
       {/* Student summary cards */}
       <div className="grid gap-5 lg:grid-cols-2">
@@ -140,7 +129,9 @@ export default function TeamDashboard() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="font-display font-bold text-lg">{s.name}</h3>
-                    {s.data.seeded ? <Pill tone="muted">Sample</Pill> : <Pill tone="success">Live</Pill>}
+                    {s.data.attempts.length > 0
+                      ? <Pill tone="success">Live</Pill>
+                      : <Pill tone="muted">No activity yet</Pill>}
                   </div>
                   <div className="text-xs text-muted truncate">{s.email}</div>
                 </div>
@@ -225,11 +216,131 @@ export default function TeamDashboard() {
 
       {/* Class-wide insights */}
       <div className="grid gap-5 lg:grid-cols-3">
-        <Stat label="Combined questions" value={students.reduce((a, s) => a + s.data.attempts.length, 0)} icon={<CheckCircle2 size={20} />} accent="brand" />
+        <Stat label="Combined questions" value={totalAttempts} icon={<CheckCircle2 size={20} />} accent="brand" />
         <Stat label="Avg estimated score" value={Math.round(students.reduce((a, s) => a + s.score.total, 0) / students.length)} icon={<Target size={20} />} accent="accent" />
         <Stat label="Shared weak area" value={<span className="text-base">{sharedWeakness(students)}</span>} icon={<AlertTriangle size={20} />} accent="warning" />
       </div>
+
+      {/* Deep analytics (real data) */}
+      {totalAttempts > 0 && <ClassAnalytics students={students} colors={barColors} />}
     </div>
+  );
+}
+
+/** Difficulty performance, mistake distribution, pace & engagement — all from real attempts. */
+function ClassAnalytics({ students, colors }: { students: StudentView[]; colors: string[] }) {
+  const DIFFS: Array<'easy' | 'medium' | 'hard'> = ['easy', 'medium', 'hard'];
+
+  // Accuracy by difficulty, per student
+  const diffData = DIFFS.map((d) => {
+    const row: Record<string, number | string> = { difficulty: d[0].toUpperCase() + d.slice(1) };
+    students.forEach((s) => {
+      const subset = s.data.attempts.filter((a) => a.difficulty === d);
+      row[s.name] = subset.length ? Math.round((subset.filter((a) => a.correct).length / subset.length) * 100) : 0;
+    });
+    return row;
+  });
+
+  // Mistake distribution (class-wide)
+  const mistakeCounts: Record<string, number> = {};
+  let totalMistakes = 0;
+  students.forEach((s) =>
+    s.data.attempts.filter((a) => !a.correct && a.mistakeCategory).forEach((a) => {
+      mistakeCounts[a.mistakeCategory!] = (mistakeCounts[a.mistakeCategory!] || 0) + 1;
+      totalMistakes++;
+    })
+  );
+  const mistakes = Object.entries(mistakeCounts).sort((a, b) => b[1] - a[1]);
+
+  // Engagement: questions in the last 7 days, per student
+  const weekAgo = Date.now() - 7 * 86400000;
+
+  return (
+    <>
+      <div className="grid gap-5 lg:grid-cols-2">
+        {/* Accuracy by difficulty */}
+        <Card>
+          <SectionTitle title="Accuracy by difficulty" subtitle="Who holds up as questions get harder" />
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={diffData} margin={{ left: -10, top: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
+              <XAxis dataKey="difficulty" tick={{ fontSize: 12 }} stroke="#94a3b8" />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} stroke="#94a3b8" />
+              <Tooltip contentStyle={{ borderRadius: 12, fontSize: 12 }} cursor={{ fill: 'rgba(148,163,184,0.08)' }} formatter={(v) => `${v}%`} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {students.map((s, i) => (
+                <Bar key={s.email} dataKey={s.name} radius={[6, 6, 0, 0]} fill={colors[i % colors.length]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Mistake distribution */}
+        <Card>
+          <SectionTitle title="Why answers are missed" subtitle="Class-wide mistake breakdown" />
+          {totalMistakes === 0 ? (
+            <p className="text-sm text-muted">No mistakes logged yet.</p>
+          ) : (
+            <div className="space-y-3 mt-1">
+              {mistakes.map(([k, v]) => {
+                const pct = Math.round((v / totalMistakes) * 100);
+                return (
+                  <div key={k}>
+                    <div className="flex items-center justify-between text-sm mb-1">
+                      <span>{MISTAKE_LABELS[k as MistakeCategory]}</span>
+                      <span className="text-muted">{v} · {pct}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-500/10 overflow-hidden">
+                      <div className="h-full rounded-full bg-gradient-to-r from-rose-500 to-amber-500" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Pace & engagement table */}
+      <Card>
+        <SectionTitle title="Pace & engagement" subtitle="Effort and speed over the last 7 days — straight from logged attempts" />
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-muted">
+              <tr className="text-left border-b border-[rgb(var(--border))]">
+                <th className="py-2 pr-3 font-semibold">Student</th>
+                <th className="py-2 px-3 font-semibold text-right">Total Qs</th>
+                <th className="py-2 px-3 font-semibold text-right">Last 7d</th>
+                <th className="py-2 px-3 font-semibold text-right">Accuracy</th>
+                <th className="py-2 px-3 font-semibold text-right">Avg time/Q</th>
+                <th className="py-2 px-3 font-semibold text-right">Time on task</th>
+                <th className="py-2 pl-3 font-semibold">Last active</th>
+              </tr>
+            </thead>
+            <tbody>
+              {students.map((s) => {
+                const total = s.data.attempts.length;
+                const last7 = s.data.attempts.filter((a) => a.ts >= weekAgo).length;
+                const avg = total ? Math.round(s.data.attempts.reduce((x, a) => x + a.timeSec, 0) / total) : 0;
+                return (
+                  <tr key={s.email} className="border-b border-[rgb(var(--border))]/50">
+                    <td className="py-2 pr-3 font-medium">{s.name}</td>
+                    <td className="py-2 px-3 text-right">{total}</td>
+                    <td className="py-2 px-3 text-right">
+                      <span className={last7 === 0 ? 'text-danger font-semibold' : ''}>{last7}</span>
+                    </td>
+                    <td className="py-2 px-3 text-right" style={{ color: masteryColor(s.accuracy) }}>{s.accuracy}%</td>
+                    <td className="py-2 px-3 text-right">{total ? formatTime(avg) : '—'}</td>
+                    <td className="py-2 px-3 text-right">{s.totalMin}m</td>
+                    <td className="py-2 pl-3 text-muted">{s.lastActive ? relativeDate(s.lastActive) : 'never'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </>
   );
 }
 
