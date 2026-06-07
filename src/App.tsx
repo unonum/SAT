@@ -13,6 +13,7 @@ import DailyPractice from '@/pages/DailyPractice';
 import Weakness from '@/pages/Weakness';
 import StudyPlan from '@/pages/StudyPlan';
 import MockTest from '@/pages/MockTest';
+import Evaluation from '@/pages/Evaluation';
 import ErrorLog from '@/pages/ErrorLog';
 import ProgressReport from '@/pages/ProgressReport';
 import ParentDashboard from '@/pages/ParentDashboard';
@@ -62,6 +63,7 @@ export default function App() {
       <Route path="/app/weakness" element={<Protected><Weakness /></Protected>} />
       <Route path="/app/plan" element={<Protected><StudyPlan /></Protected>} />
       <Route path="/app/mock" element={<Protected><MockTest /></Protected>} />
+      <Route path="/app/evaluation" element={<Protected><Evaluation /></Protected>} />
       <Route path="/app/errors" element={<Protected><ErrorLog /></Protected>} />
       <Route path="/app/report" element={<Protected><ProgressReport /></Protected>} />
       <Route path="/app/parent" element={<Protected><ParentDashboard /></Protected>} />

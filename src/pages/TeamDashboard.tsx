@@ -467,6 +467,9 @@ const MODE_LABELS: Record<string, string> = {
   'error-review': 'Error review',
   bootcamp: 'Bootcamp',
   revision: 'Revision',
+  'evaluation-1': 'Evaluation 1',
+  'evaluation-2': 'Evaluation 2',
+  'evaluation-3': 'Evaluation 3',
 };
 
 function AttemptLog({ s }: { s: StudentView }) {

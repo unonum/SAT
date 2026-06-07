@@ -86,7 +86,10 @@ export type PracticeMode =
   | 'speed'
   | 'error-review'
   | 'bootcamp'
-  | 'revision-7day';
+  | 'revision-7day'
+  | 'evaluation-1'
+  | 'evaluation-2'
+  | 'evaluation-3';
 
 export interface TopicMastery {
   topic: TopicId;

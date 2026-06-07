@@ -8,6 +8,7 @@ import {
   LayoutDashboard, Dumbbell, Target, CalendarCheck, FileText,
   AlertTriangle, LineChart, Database, Settings, Sun, Moon,
   Flame, Menu, X, LogOut, Sparkles, ChevronRight, Crown,
+  ClipboardCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isAdmin } from '@/lib/auth';
@@ -51,6 +52,38 @@ export default function AppShell({ children }: { children: ReactNode }) {
           Target<span className="gradient-text">1450</span>
         </span>
       </NavLink>
+
+      {/* Attention CTA — start a full evaluation (students only) */}
+      {!admin && (
+        <div className="px-3 pb-2">
+          <NavLink
+            to="/app/evaluation"
+            onClick={() => setOpen(false)}
+            className={({ isActive }) =>
+              cn(
+                'group relative flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold overflow-hidden transition-all duration-200',
+                isActive
+                  ? 'bg-gradient-to-r from-violet-600 to-brand-600 text-white shadow-glow-violet'
+                  : 'text-white bg-gradient-to-r from-violet-500 to-brand-500 shadow-glow-violet hover:brightness-110'
+              )
+            }
+          >
+            {/* shimmer */}
+            <motion.span
+              aria-hidden
+              className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent"
+              initial={{ x: '-120%' }}
+              animate={{ x: '120%' }}
+              transition={{ repeat: Infinity, duration: 2.4, ease: 'easeInOut', repeatDelay: 1.2 }}
+            />
+            <span className="relative grid h-7 w-7 place-items-center rounded-lg bg-white/20">
+              <ClipboardCheck size={16} />
+            </span>
+            <span className="relative flex-1">Start Evaluation</span>
+            <span className="relative rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">3 tests</span>
+          </NavLink>
+        </div>
+      )}
 
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 px-3 overflow-y-auto pb-2">
