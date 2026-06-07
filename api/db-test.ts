@@ -1,46 +1,80 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@libsql/client';
 
-/** Temporary diagnostic endpoint — remove after confirming DB connectivity. */
+/** Diagnostic endpoint — tests Turso + OpenAI + Anthropic connectivity. */
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
-  const url = process.env.TURSO_DATABASE_URL;
-  const authToken = process.env.TURSO_AUTH_TOKEN;
+  const tursoUrl = process.env.TURSO_DATABASE_URL;
+  const tursoToken = process.env.TURSO_AUTH_TOKEN;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
   const report: Record<string, unknown> = {
     env: {
-      TURSO_DATABASE_URL: url ? `${url.slice(0, 20)}…` : 'NOT SET',
-      TURSO_AUTH_TOKEN: authToken ? `${authToken.slice(0, 12)}…` : 'NOT SET',
+      TURSO_DATABASE_URL: tursoUrl ? `${tursoUrl.slice(0, 24)}…` : 'NOT SET',
+      TURSO_AUTH_TOKEN: tursoToken ? `${tursoToken.slice(0, 12)}…` : 'NOT SET',
+      OPENAI_API_KEY: openaiKey ? `${openaiKey.slice(0, 10)}…` : 'NOT SET',
+      ANTHROPIC_API_KEY: anthropicKey ? `${anthropicKey.slice(0, 12)}…` : 'NOT SET',
     },
   };
 
-  if (!url || !authToken) {
-    return res.status(500).json({ error: 'Missing env vars', report });
-  }
-
-  try {
-    const db = createClient({ url, authToken });
-
-    const ping = await db.execute('SELECT 1 AS ok');
-    report.ping = ping.rows;
-
-    const tables = await db.execute(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`);
-    report.tables = tables.rows.map((r) => r.name);
-
-    const counts: Record<string, number> = {};
-    for (const name of ['attempts', 'rag_chunks', 'rag_questions']) {
-      const exists = (tables.rows as Array<{ name: unknown }>).some((r) => r.name === name);
-      if (exists) {
-        const cnt = await db.execute(`SELECT COUNT(*) as c FROM ${name}`);
-        counts[name] = cnt.rows[0].c as number;
-      } else {
-        counts[name] = -1; // -1 = table not yet created
-      }
+  // ── Turso ──────────────────────────────────────────────────────────────────
+  if (tursoUrl && tursoToken) {
+    try {
+      const db = createClient({ url: tursoUrl, authToken: tursoToken });
+      const ping = await db.execute('SELECT 1 AS ok');
+      const tables = await db.execute(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`);
+      report.turso = {
+        ok: true,
+        ping: ping.rows,
+        tables: tables.rows.map((r) => r.name),
+      };
+    } catch (err: unknown) {
+      report.turso = { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
-    report.row_counts = counts;
-
-    return res.status(200).json({ ok: true, report });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: message, report });
+  } else {
+    report.turso = { ok: false, error: 'Missing env vars' };
   }
+
+  // ── OpenAI ─────────────────────────────────────────────────────────────────
+  if (openaiKey) {
+    try {
+      const OpenAI = (await import('openai')).default;
+      const openai = new OpenAI({ apiKey: openaiKey });
+      // Cheapest possible call — embed a single short string
+      const emb = await openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: 'ping',
+      });
+      report.openai = { ok: true, dims: emb.data[0].embedding.length };
+    } catch (err: unknown) {
+      report.openai = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  } else {
+    report.openai = { ok: false, error: 'OPENAI_API_KEY not set' };
+  }
+
+  // ── Anthropic ──────────────────────────────────────────────────────────────
+  if (anthropicKey) {
+    try {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const anthropic = new Anthropic({ apiKey: anthropicKey });
+      const msg = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'Say "ok"' }],
+      });
+      report.anthropic = { ok: true, reply: (msg.content[0] as { text: string }).text };
+    } catch (err: unknown) {
+      report.anthropic = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  } else {
+    report.anthropic = { ok: false, error: 'ANTHROPIC_API_KEY not set' };
+  }
+
+  const allOk =
+    (report.turso as { ok: boolean }).ok &&
+    (report.openai as { ok: boolean }).ok &&
+    (report.anthropic as { ok: boolean }).ok;
+
+  return res.status(allOk ? 200 : 500).json({ ok: allOk, report });
 }
