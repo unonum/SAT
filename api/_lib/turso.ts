@@ -1,4 +1,4 @@
-import { createClient, type Client } from '@libsql/client';
+import { createClient, type Client } from '@libsql/client/http';
 
 // Server-side Turso connection. The auth token is read from env vars and
 // never reaches the browser — the SPA only ever talks to /api/*.
