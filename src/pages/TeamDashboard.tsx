@@ -285,7 +285,109 @@ function StudentDetail({ s }: { s: StudentView }) {
           </div>
         </div>
       </div>
+
+      {/* Minute details — per-attempt activity log */}
+      <AttemptLog s={s} />
     </motion.div>
+  );
+}
+
+const MODE_LABELS: Record<string, string> = {
+  diagnostic: 'Diagnostic',
+  'daily-adaptive': 'Daily',
+  topic: 'Topic',
+  timed: 'Timed drill',
+  speed: 'Speed',
+  weakness: 'Weakness',
+  mock: 'Mock test',
+  'error-review': 'Error review',
+  bootcamp: 'Bootcamp',
+  revision: 'Revision',
+};
+
+function AttemptLog({ s }: { s: StudentView }) {
+  const [mode, setMode] = useState<string>('all');
+  const [limit, setLimit] = useState(20);
+
+  const modes = useMemo(() => {
+    const set = new Set(s.data.attempts.map((a) => a.mode).filter(Boolean) as string[]);
+    return ['all', ...Array.from(set)];
+  }, [s.data.attempts]);
+
+  const rows = useMemo(() => {
+    return [...s.data.attempts]
+      .filter((a) => mode === 'all' || a.mode === mode)
+      .sort((a, b) => b.ts - a.ts);
+  }, [s.data.attempts, mode]);
+
+  const shown = rows.slice(0, limit);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="text-xs font-bold uppercase tracking-wide text-muted">
+          Attempt-by-attempt log <span className="text-muted/70">({rows.length})</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {modes.map((m) => (
+            <button
+              key={m}
+              onClick={() => { setMode(m); setLimit(20); }}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                mode === m ? 'bg-brand-500 text-white' : 'surface border text-muted hover:text-fg'
+              }`}
+            >
+              {m === 'all' ? 'All' : MODE_LABELS[m] ?? m}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {shown.length === 0 ? (
+        <p className="text-sm text-muted">No attempts in this view yet.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-[rgb(var(--border))]">
+          <table className="w-full text-xs">
+            <thead className="surface text-muted">
+              <tr className="text-left">
+                <th className="px-3 py-2 font-semibold">When</th>
+                <th className="px-3 py-2 font-semibold">Topic</th>
+                <th className="px-3 py-2 font-semibold">Diff.</th>
+                <th className="px-3 py-2 font-semibold">Mode</th>
+                <th className="px-3 py-2 font-semibold text-center">Result</th>
+                <th className="px-3 py-2 font-semibold text-right">Time</th>
+                <th className="px-3 py-2 font-semibold">Mistake</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((a) => (
+                <tr key={a.id} className="border-t border-[rgb(var(--border))]">
+                  <td className="px-3 py-2 whitespace-nowrap text-muted">{relativeDate(a.ts)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{TOPIC_MAP[a.topic]?.name ?? a.topic}</td>
+                  <td className="px-3 py-2 capitalize text-muted">{a.difficulty}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-muted">{MODE_LABELS[a.mode ?? ''] ?? a.mode ?? '—'}</td>
+                  <td className="px-3 py-2 text-center">
+                    {a.correct
+                      ? <span className="text-success font-bold">✓</span>
+                      : <span className="text-danger font-bold">✗</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">{formatTime(a.timeSec)}</td>
+                  <td className="px-3 py-2 text-muted">
+                    {a.correct ? '—' : MISTAKE_LABELS[a.mistakeCategory as MistakeCategory] ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rows.length > limit && (
+        <button onClick={() => setLimit((n) => n + 20)} className="btn-ghost mt-2 w-full py-1.5 text-xs">
+          Show more ({rows.length - limit} remaining)
+        </button>
+      )}
+    </div>
   );
 }
 

@@ -11,7 +11,7 @@ import type {
 } from './types';
 import { classifyMistake, estimateScore, computeAllMastery } from './adaptive';
 import { evaluateBadges, todayStr, updateStreak, xpForAttempt } from './gamification';
-import { isAdmin, STUDENT_EMAILS } from './auth';
+import { isAdmin, STUDENT_EMAILS, SAMPLE_SEED_EMAILS } from './auth';
 import { seedStudentProfiles } from './seed';
 import { rebuildFromAttempts } from './history';
 import {
@@ -97,16 +97,18 @@ function snapshotProfiles(s: AppState): Record<string, UserData> {
   };
 }
 
-/** Ensure the two student profiles exist with sample data (admin view). */
+/** Ensure the demo student profiles exist with sample data (admin view).
+ *  Only SAMPLE_SEED_EMAILS get synthetic data; live-only students appear
+ *  on the dashboard once their real (DB-synced) attempts arrive. */
 function ensureSeededStudents(profiles: Record<string, UserData>): Record<string, UserData> {
-  const needsSeed = STUDENT_EMAILS.some(
+  const needsSeed = SAMPLE_SEED_EMAILS.some(
     (e) => !profiles[e] || profiles[e].attempts.length === 0
   );
   if (!needsSeed) return profiles;
   const seeds = seedStudentProfiles();
   const merged = { ...profiles };
-  for (const e of STUDENT_EMAILS) {
-    if (!merged[e] || merged[e].attempts.length === 0) merged[e] = seeds[e];
+  for (const e of SAMPLE_SEED_EMAILS) {
+    if (seeds[e] && (!merged[e] || merged[e].attempts.length === 0)) merged[e] = seeds[e];
   }
   return merged;
 }

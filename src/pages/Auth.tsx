@@ -4,6 +4,7 @@ import { useStore } from '@/lib/store';
 import { motion } from 'framer-motion';
 import { Target, Mail, Lock, ArrowRight, Sparkles, Check, AlertCircle } from 'lucide-react';
 import { checkCredentials } from '@/lib/auth';
+import { flushPending } from '@/lib/db';
 
 export default function Auth({ signup }: { signup?: boolean }) {
   const navigate = useNavigate();
@@ -37,6 +38,8 @@ export default function Auth({ signup }: { signup?: boolean }) {
 
     // pull history from the DB (no-op in local-only mode)
     try {
+      // first, sync anything that failed to upload on a previous session
+      await flushPending();
       if (result.isAdmin) {
         await hydrateStudents();
         setBusy(false);

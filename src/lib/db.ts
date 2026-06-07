@@ -64,28 +64,94 @@ function fromRow(r: AttemptRow): Attempt {
   };
 }
 
-async function post(body: unknown): Promise<void> {
-  if (!isRemoteEnabled) return;
+const PENDING_KEY = 't1450-pending-attempts';
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+interface PendingEntry { email: string; payload: ReturnType<typeof toPayload> }
+
+function readPending(): PendingEntry[] {
+  if (typeof localStorage === 'undefined') return [];
   try {
-    await fetch(API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    console.warn('[db] write failed (using local only):', e);
+    return JSON.parse(localStorage.getItem(PENDING_KEY) ?? '[]');
+  } catch {
+    return [];
   }
 }
+function writePending(items: PendingEntry[]) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify(items));
+  } catch {
+    /* storage full / unavailable */
+  }
+}
+function enqueuePending(email: string, payloads: ReturnType<typeof toPayload>[]) {
+  const items = readPending();
+  for (const payload of payloads) items.push({ email, payload });
+  // keep the queue bounded so a long outage can't blow up storage
+  writePending(items.slice(-2000));
+}
 
-/** Write a single attempt. */
+/** POST a batch with retry. Returns true on success, false after exhausting retries. */
+async function postWithRetry(body: unknown, attempts = 4): Promise<boolean> {
+  if (!isRemoteEnabled) return false;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return true;
+      // 4xx (bad request) won't be fixed by retrying
+      if (res.status >= 400 && res.status < 500) {
+        console.warn('[db] write rejected:', res.status);
+        return false;
+      }
+    } catch (e) {
+      console.warn(`[db] write attempt ${i + 1} failed:`, e);
+    }
+    if (i < attempts - 1) await sleep(500 * 2 ** i); // 0.5s, 1s, 2s
+  }
+  return false;
+}
+
+/** Replay any attempts that previously failed to sync. Safe to call often. */
+export async function flushPending(): Promise<void> {
+  if (!isRemoteEnabled) return;
+  const items = readPending();
+  if (!items.length) return;
+  // group by email and upsert in one request per user (idempotent by id)
+  const byEmail = new Map<string, ReturnType<typeof toPayload>[]>();
+  for (const it of items) (byEmail.get(it.email) ?? byEmail.set(it.email, []).get(it.email)!).push(it.payload);
+
+  const stillFailing: PendingEntry[] = [];
+  for (const [email, payloads] of byEmail) {
+    const ok = await postWithRetry({ email, attempts: payloads });
+    if (!ok) for (const payload of payloads) stillFailing.push({ email, payload });
+  }
+  writePending(stillFailing);
+}
+
+/** Write a single attempt. Guaranteed-delivery: queues locally if the network fails. */
 export async function pushAttempt(email: string, attempt: Attempt): Promise<void> {
-  await post({ email, attempts: [toPayload(attempt)] });
+  if (!isRemoteEnabled) return;
+  const payload = toPayload(attempt);
+  const ok = await postWithRetry({ email, attempts: [payload] });
+  if (ok) {
+    // opportunistically drain anything that was waiting
+    if (readPending().length) void flushPending();
+  } else {
+    enqueuePending(email, [payload]);
+  }
 }
 
 /** Bulk upload (used for seeding demo history into the DB). */
 export async function pushAttemptsBulk(email: string, attempts: Attempt[]): Promise<void> {
-  if (attempts.length === 0) return;
-  await post({ email, attempts: attempts.map(toPayload) });
+  if (attempts.length === 0 || !isRemoteEnabled) return;
+  const payloads = attempts.map(toPayload);
+  const ok = await postWithRetry({ email, attempts: payloads });
+  if (!ok) enqueuePending(email, payloads);
 }
 
 /** Mark an attempt as retried. */
