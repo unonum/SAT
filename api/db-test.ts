@@ -1,80 +1,90 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@libsql/client';
+import { ensureSchema, ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso';
 
-/** Diagnostic endpoint — tests Turso + OpenAI + Anthropic connectivity. */
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
   const tursoUrl = process.env.TURSO_DATABASE_URL;
   const tursoToken = process.env.TURSO_AUTH_TOKEN;
   const openaiKey = process.env.OPENAI_API_KEY;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
   const report: Record<string, unknown> = {
     env: {
       TURSO_DATABASE_URL: tursoUrl ? `${tursoUrl.slice(0, 24)}…` : 'NOT SET',
       TURSO_AUTH_TOKEN: tursoToken ? `${tursoToken.slice(0, 12)}…` : 'NOT SET',
       OPENAI_API_KEY: openaiKey ? `${openaiKey.slice(0, 10)}…` : 'NOT SET',
-      ANTHROPIC_API_KEY: anthropicKey ? `${anthropicKey.slice(0, 12)}…` : 'NOT SET',
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? 'set' : 'NOT SET',
     },
   };
 
-  // ── Turso ──────────────────────────────────────────────────────────────────
-  if (tursoUrl && tursoToken) {
-    try {
-      const db = createClient({ url: tursoUrl, authToken: tursoToken });
-      const ping = await db.execute('SELECT 1 AS ok');
-      const tables = await db.execute(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`);
-      report.turso = {
-        ok: true,
-        ping: ping.rows,
-        tables: tables.rows.map((r) => r.name),
-      };
-    } catch (err: unknown) {
-      report.turso = { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  } else {
-    report.turso = { ok: false, error: 'Missing env vars' };
+  // ── 1. Raw ping ────────────────────────────────────────────────────────────
+  try {
+    const db = createClient({ url: tursoUrl!, authToken: tursoToken! });
+    const r = await db.execute('SELECT 1 AS ok');
+    report.ping = { ok: true, rows: r.rows };
+  } catch (e: unknown) {
+    report.ping = { ok: false, error: String(e) };
+    return res.status(500).json({ ok: false, step: 'ping', report });
   }
 
-  // ── OpenAI ─────────────────────────────────────────────────────────────────
-  if (openaiKey) {
-    try {
-      const OpenAI = (await import('openai')).default;
-      const openai = new OpenAI({ apiKey: openaiKey });
-      // Cheapest possible call — embed a single short string
-      const emb = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: 'ping',
-      });
-      report.openai = { ok: true, dims: emb.data[0].embedding.length };
-    } catch (err: unknown) {
-      report.openai = { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  } else {
-    report.openai = { ok: false, error: 'OPENAI_API_KEY not set' };
+  // ── 2. ensureSchema (attempts table) ──────────────────────────────────────
+  try {
+    await ensureSchema();
+    report.ensureSchema = { ok: true };
+  } catch (e: unknown) {
+    report.ensureSchema = { ok: false, error: String(e) };
+    return res.status(500).json({ ok: false, step: 'ensureSchema', report });
   }
 
-  // ── Anthropic ──────────────────────────────────────────────────────────────
-  if (anthropicKey) {
-    try {
-      const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const anthropic = new Anthropic({ apiKey: anthropicKey });
-      const msg = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 8,
-        messages: [{ role: 'user', content: 'Say "ok"' }],
-      });
-      report.anthropic = { ok: true, reply: (msg.content[0] as { text: string }).text };
-    } catch (err: unknown) {
-      report.anthropic = { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  } else {
-    report.anthropic = { ok: false, error: 'ANTHROPIC_API_KEY not set' };
+  // ── 3. ensureRagSchema (rag tables) ───────────────────────────────────────
+  try {
+    await ensureRagSchema();
+    report.ensureRagSchema = { ok: true };
+  } catch (e: unknown) {
+    report.ensureRagSchema = { ok: false, error: String(e) };
+    return res.status(500).json({ ok: false, step: 'ensureRagSchema', report });
   }
 
-  const allOk =
-    (report.turso as { ok: boolean }).ok &&
-    (report.openai as { ok: boolean }).ok &&
-    (report.anthropic as { ok: boolean }).ok;
+  // ── 4. Write a test chunk ─────────────────────────────────────────────────
+  const testId = `test-chunk-${Date.now()}`;
+  try {
+    await upsertChunkBatch([{
+      id: testId,
+      source_name: '__test__',
+      source_type: 'text',
+      chunk_index: 0,
+      content: 'diagnostic test chunk',
+      embedding: new Array(1536).fill(0.01),
+      created_at: Date.now(),
+    }]);
+    report.writeChunk = { ok: true, id: testId };
+  } catch (e: unknown) {
+    report.writeChunk = { ok: false, error: String(e) };
+    return res.status(500).json({ ok: false, step: 'writeChunk', report });
+  }
 
-  return res.status(allOk ? 200 : 500).json({ ok: allOk, report });
+  // ── 5. List sources ───────────────────────────────────────────────────────
+  try {
+    const sources = await listSources();
+    report.listSources = { ok: true, count: sources.length, sources };
+  } catch (e: unknown) {
+    report.listSources = { ok: false, error: String(e) };
+  }
+
+  // ── 6. OpenAI embed test ──────────────────────────────────────────────────
+  try {
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: openaiKey });
+    const emb = await openai.embeddings.create({ model: 'text-embedding-3-small', input: 'ping' });
+    report.openai = { ok: true, dims: emb.data[0].embedding.length };
+  } catch (e: unknown) {
+    report.openai = { ok: false, error: String(e) };
+  }
+
+  // ── Cleanup test chunk ────────────────────────────────────────────────────
+  try {
+    const db = createClient({ url: tursoUrl!, authToken: tursoToken! });
+    await db.execute({ sql: `DELETE FROM rag_chunks WHERE id = ?`, args: [testId] });
+  } catch { /* best-effort */ }
+
+  return res.status(200).json({ ok: true, report });
 }
