@@ -7,27 +7,20 @@ import { todayStr, levelFromXp, BADGES } from '@/lib/gamification';
 import { TOPIC_MAP } from '@/lib/topics';
 import { Card, Stat, ProgressRing, MasteryBar, Pill, SectionTitle } from '@/components/ui';
 import { masteryLabel, relativeDate } from '@/lib/utils';
+import { motion } from 'framer-motion';
 import {
-  Trophy,
-  Target,
-  Flame,
-  CheckCircle2,
-  Brain,
-  Dumbbell,
-  AlertTriangle,
-  ArrowRight,
-  Sparkles,
-  TrendingUp,
+  Trophy, Target, Flame, CheckCircle2, Brain, Dumbbell,
+  AlertTriangle, ArrowRight, Sparkles, TrendingUp,
 } from 'lucide-react';
 import {
-  AreaChart,
-  Area,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
+  AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts';
+
+const fd = (delay = 0) => ({
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.5, delay, ease: [0.16, 1, 0.3, 1] },
+});
 
 export default function Dashboard() {
   const { attempts, daily, gamification, user } = useStore();
@@ -52,182 +45,212 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Daily AI feedback banner */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-brand-600 to-accent-600 p-6 text-white">
-        <div className="flex items-start gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/20">
-            <Sparkles size={20} />
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-white/70">Your daily AI coach</div>
-            <p className="mt-1 font-medium leading-relaxed">{feedback.message}</p>
-            <p className="mt-2 text-sm text-white/80">→ {feedback.nextStep}</p>
-            <Link to="/app/practice" className="mt-4 inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-white/90">
-              Start today's practice <ArrowRight size={15} />
-            </Link>
+      {/* Daily AI Coach banner */}
+      <motion.div {...fd(0)}>
+        <div className="relative overflow-hidden rounded-3xl p-px bg-gradient-brand shadow-glow-lg">
+          <div className="relative rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-accent-600 p-6 sm:p-7">
+            {/* Background decoration */}
+            <div className="absolute right-0 top-0 h-full w-1/3 opacity-10"
+              style={{ background: 'radial-gradient(circle at 80% 50%, white, transparent)' }} />
+            <div className="flex items-start gap-4">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/20 backdrop-blur-sm">
+                <Sparkles size={22} className="text-yellow-300 animate-bounce-subtle" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-bold uppercase tracking-widest text-white/60 mb-1">Your daily AI coach</div>
+                <p className="font-medium text-white leading-relaxed">{feedback.message}</p>
+                <p className="mt-1.5 text-sm text-white/75">→ {feedback.nextStep}</p>
+                <Link to="/app/practice" className="mt-4 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-brand-700 hover:bg-white/90 hover:scale-[1.02] transition-all shadow-lg">
+                  Start today's practice <ArrowRight size={14} />
+                </Link>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Top stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Estimated SAT score" value={score.total} sub={`Math ${score.math} · RW ${score.rw}`} icon={<Target size={20} />} />
-        <Stat label="Target gap" value={gap > 0 ? `${gap} pts` : 'On target! 🎯'} sub={`Goal ${user?.targetScore ?? 1450}`} accent={gap > 100 ? 'warning' : 'success'} icon={<TrendingUp size={20} />} />
-        <Stat label="Day streak" value={`${gamification.streak} 🔥`} sub={`Best habit you've got`} accent="warning" icon={<Flame size={20} />} />
-        <Stat label="Level" value={lvl.level} sub={`${gamification.xp} XP · ${lvl.needed - lvl.into} to next`} accent="accent" icon={<Trophy size={20} />} />
+        {[
+          { label: 'Estimated SAT score', value: score.total, sub: `Math ${score.math} · RW ${score.rw}`, icon: <Target size={20} />, accent: 'brand' as const, delay: 0.05 },
+          { label: 'Points to target', value: gap > 0 ? `${gap} pts` : '🎯 On target!', sub: `Goal ${user?.targetScore ?? 1450}`, icon: <TrendingUp size={20} />, accent: gap > 100 ? 'warning' as const : 'success' as const, delay: 0.1 },
+          { label: 'Day streak', value: `${gamification.streak} 🔥`, sub: 'Keep it going!', icon: <Flame size={20} />, accent: 'warning' as const, delay: 0.15 },
+          { label: 'Level', value: lvl.level, sub: `${gamification.xp} XP`, icon: <Trophy size={20} />, accent: 'violet' as const, delay: 0.2 },
+        ].map((s) => (
+          <motion.div key={s.label} {...fd(s.delay)}>
+            <Stat label={s.label} value={s.value} sub={s.sub} icon={s.icon} accent={s.accent} />
+          </motion.div>
+        ))}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Score projection chart */}
-        <Card className="lg:col-span-2">
-          <SectionTitle title="Score projection" subtitle="Estimated SAT score over your recent practice" />
-          {chartData.length > 1 ? (
-            <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={chartData} margin={{ left: -10, right: 10, top: 10 }}>
-                <defs>
-                  <linearGradient id="sc" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3563ff" stopOpacity={0.4} />
-                    <stop offset="100%" stopColor="#3563ff" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#94a3b8" />
-                <YAxis domain={[400, 1600]} tick={{ fontSize: 11 }} stroke="#94a3b8" width={42} />
-                <Tooltip
-                  contentStyle={{ borderRadius: 12, border: '1px solid rgba(148,163,184,0.3)', fontSize: 12 }}
-                />
-                <Area type="monotone" dataKey="score" stroke="#3563ff" strokeWidth={2.5} fill="url(#sc)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="grid h-[240px] place-items-center text-center text-sm text-muted">
-              Practice a few days to see your score trend climb 📈
+        {/* Score chart */}
+        <motion.div {...fd(0.15)} className="lg:col-span-2">
+          <Card>
+            <SectionTitle title="Score projection" subtitle="Estimated SAT score over recent practice" />
+            {chartData.length > 1 ? (
+              <ResponsiveContainer width="100%" height={240}>
+                <AreaChart data={chartData} margin={{ left: -10, right: 10, top: 10 }}>
+                  <defs>
+                    <linearGradient id="sc" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#3563ff" stopOpacity={0.5} />
+                      <stop offset="100%" stopColor="#3563ff" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.12)" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#94a3b8" />
+                  <YAxis domain={[400, 1600]} tick={{ fontSize: 11 }} stroke="#94a3b8" width={42} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 14, border: '1px solid rgba(53,99,255,0.2)', fontSize: 12, backdropFilter: 'blur(8px)', background: 'rgba(11,15,30,0.85)' }}
+                  />
+                  <Area type="monotone" dataKey="score" stroke="#3563ff" strokeWidth={3} fill="url(#sc)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="grid h-[240px] place-items-center text-center">
+                <div>
+                  <div className="text-4xl mb-3">📈</div>
+                  <p className="text-sm text-muted">Practice a few days to see your score trend</p>
+                </div>
+              </div>
+            )}
+          </Card>
+        </motion.div>
+
+        {/* Today snapshot */}
+        <motion.div {...fd(0.2)}>
+          <Card className="h-full flex flex-col">
+            <SectionTitle title="Today" />
+            <div className="flex-1 flex flex-col items-center justify-center py-3 gap-5">
+              <ProgressRing value={todayAcc} size={128} label={`${todayAcc}%`} sublabel="accuracy today" />
+              <div className="w-full space-y-2.5 text-sm">
+                <TRow label="Questions" value={String(todayAttempts.length)} icon="📝" />
+                <TRow label="Time spent" value={`${Math.round(todayAttempts.reduce((s, a) => s + a.timeSec, 0) / 60)}m`} icon="⏱️" />
+                <TRow label="XP earned" value={`+${todayAttempts.reduce((s, a) => s + (a.correct ? 12 : 4), 0)}`} icon="✨" />
+              </div>
             </div>
-          )}
-        </Card>
-
-        {/* Today's snapshot */}
-        <Card>
-          <SectionTitle title="Today" />
-          <div className="flex items-center justify-center py-2">
-            <ProgressRing value={todayAcc} size={120} label={`${todayAcc}%`} sublabel="accuracy" />
-          </div>
-          <div className="mt-4 space-y-2 text-sm">
-            <Row k="Questions" v={String(todayAttempts.length)} icon={<CheckCircle2 size={15} className="text-success" />} />
-            <Row k="Time spent" v={`${Math.round(todayAttempts.reduce((s, a) => s + a.timeSec, 0) / 60)} min`} icon={<Flame size={15} className="text-orange-500" />} />
-            <Row k="XP earned today" v={`+${todayAttempts.reduce((s, a) => s + (a.correct ? 12 : 4), 0)}`} icon={<Sparkles size={15} className="text-brand-500" />} />
-          </div>
-        </Card>
+          </Card>
+        </motion.div>
       </div>
 
-      {/* Weakest topics + quick actions */}
+      {/* Weak topics + quick actions */}
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <SectionTitle
-            title="Topics needing attention"
-            subtitle="Your adaptive engine is loading these first"
-            action={<Link to="/app/weakness" className="text-sm font-semibold text-brand-600">View all →</Link>}
-          />
-          {weakest.length ? (
-            <div className="space-y-4">
-              {weakest.map((m) => (
-                <div key={m.topic}>
-                  <div className="mb-1.5 flex items-center justify-between text-sm">
-                    <span className="font-medium">{TOPIC_MAP[m.topic].name}</span>
-                    <Pill tone={m.mastery >= 70 ? 'success' : m.mastery >= 50 ? 'warning' : 'danger'}>
-                      {m.mastery}% · {masteryLabel(m.mastery)}
-                    </Pill>
+        <motion.div {...fd(0.25)} className="lg:col-span-2">
+          <Card>
+            <SectionTitle
+              title="Topics needing attention"
+              subtitle="Adaptive engine loads these first"
+              action={<Link to="/app/weakness" className="text-sm font-semibold text-brand-600 hover:text-brand-500 transition-colors">View all →</Link>}
+            />
+            {weakest.length ? (
+              <div className="space-y-4">
+                {weakest.map((m) => (
+                  <div key={m.topic}>
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="font-medium">{TOPIC_MAP[m.topic].name}</span>
+                      <Pill tone={m.mastery >= 70 ? 'success' : m.mastery >= 50 ? 'warning' : 'danger'}>
+                        {m.mastery}% · {masteryLabel(m.mastery)}
+                      </Pill>
+                    </div>
+                    <MasteryBar value={m.mastery} />
                   </div>
-                  <MasteryBar value={m.mastery} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted">Complete your diagnostic to see your weak areas.</p>
-          )}
-        </Card>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <div className="text-3xl mb-2">🎯</div>
+                <p className="text-sm text-muted">Complete your diagnostic to see weak areas</p>
+                <Link to="/assessment" className="btn-primary mt-3 px-5 py-2 text-sm inline-flex">Start diagnostic</Link>
+              </div>
+            )}
+          </Card>
+        </motion.div>
 
-        <Card>
-          <SectionTitle title="Jump back in" />
-          <div className="space-y-2.5">
-            <QuickAction to="/app/practice" icon={<Dumbbell size={18} />} label="Daily adaptive practice" tone="brand" />
-            <QuickAction to="/app/weakness" icon={<Target size={18} />} label="Weakness repair mode" tone="warning" />
-            <QuickAction to="/app/mock" icon={<Brain size={18} />} label="Full mock test" tone="accent" />
-            <QuickAction to="/app/errors" icon={<AlertTriangle size={18} />} label="Review your errors" tone="danger" />
-          </div>
-        </Card>
-      </div>
-
-      {/* Badges + recent */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <SectionTitle title="Badges" subtitle={`${gamification.badges.length} unlocked`} />
-          <div className="flex flex-wrap gap-3">
-            {Object.entries(BADGES).map(([id, b]) => {
-              const earned = gamification.badges.includes(id);
-              return (
-                <div
-                  key={id}
-                  title={b.desc}
-                  className={`flex flex-col items-center gap-1 rounded-xl border p-3 text-center transition ${
-                    earned ? 'surface' : 'opacity-35 grayscale'
-                  }`}
-                  style={{ width: 88 }}
-                >
-                  <span className="text-2xl">{b.icon}</span>
-                  <span className="text-[10px] font-semibold leading-tight">{b.name}</span>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-
-        <Card>
-          <SectionTitle title="Recent activity" />
-          {attempts.length ? (
+        <motion.div {...fd(0.3)}>
+          <Card>
+            <SectionTitle title="Jump back in" />
             <div className="space-y-2">
-              {[...attempts].slice(-6).reverse().map((a) => (
-                <div key={a.id} className="flex items-center gap-3 text-sm">
-                  {a.correct ? (
-                    <CheckCircle2 size={16} className="text-success shrink-0" />
-                  ) : (
-                    <AlertTriangle size={16} className="text-danger shrink-0" />
-                  )}
-                  <span className="flex-1 truncate">{TOPIC_MAP[a.topic].name}</span>
-                  <span className="text-xs text-muted">{relativeDate(a.ts)}</span>
-                </div>
+              {[
+                { to: '/app/practice', icon: <Dumbbell size={17} />, label: 'Daily adaptive practice', grad: 'from-brand-500 to-brand-600' },
+                { to: '/app/weakness', icon: <Target size={17} />, label: 'Weakness repair mode', grad: 'from-warning to-orange-500' },
+                { to: '/app/mock', icon: <Brain size={17} />, label: 'Full mock test', grad: 'from-violet-500 to-brand-500' },
+                { to: '/app/errors', icon: <AlertTriangle size={17} />, label: 'Review error log', grad: 'from-danger to-orange-500' },
+              ].map((a) => (
+                <Link key={a.to} to={a.to} className="group flex items-center gap-3 rounded-xl border border-[rgb(var(--border))] p-3 text-sm font-medium hover:border-brand-400 hover:bg-brand-500/5 transition-all">
+                  <span className={`grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br ${a.grad} text-white shadow-soft`}>{a.icon}</span>
+                  <span className="flex-1">{a.label}</span>
+                  <ArrowRight size={15} className="text-muted group-hover:text-brand-500 group-hover:translate-x-0.5 transition-all" />
+                </Link>
               ))}
             </div>
-          ) : (
-            <p className="text-sm text-muted">No activity yet — start practicing!</p>
-          )}
-        </Card>
+          </Card>
+        </motion.div>
+      </div>
+
+      {/* Badges + recent activity */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <motion.div {...fd(0.35)}>
+          <Card>
+            <SectionTitle title="Badges" subtitle={`${gamification.badges.length} / ${Object.keys(BADGES).length} unlocked`} />
+            <div className="flex flex-wrap gap-3">
+              {Object.entries(BADGES).map(([id, b]) => {
+                const earned = gamification.badges.includes(id);
+                return (
+                  <div
+                    key={id}
+                    title={b.desc}
+                    className={cn(
+                      'flex flex-col items-center gap-1.5 rounded-2xl border p-3 text-center transition-all duration-200 cursor-default',
+                      earned
+                        ? 'border-brand-500/30 bg-brand-500/8 hover:shadow-glow hover:scale-105'
+                        : 'border-[rgb(var(--border))] opacity-30 grayscale'
+                    )}
+                    style={{ width: 84 }}
+                  >
+                    <span className="text-2xl leading-none">{b.icon}</span>
+                    <span className="text-[10px] font-semibold leading-tight">{b.name}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </motion.div>
+
+        <motion.div {...fd(0.4)}>
+          <Card>
+            <SectionTitle title="Recent activity" />
+            {attempts.length ? (
+              <div className="space-y-1.5">
+                {[...attempts].slice(-7).reverse().map((a) => (
+                  <div key={a.id} className="flex items-center gap-3 rounded-xl p-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors text-sm">
+                    <span className="text-base">{a.correct ? '✅' : '❌'}</span>
+                    <span className="flex-1 truncate font-medium">{TOPIC_MAP[a.topic].name}</span>
+                    <span className="text-xs text-muted shrink-0">{relativeDate(a.ts)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <div className="text-3xl mb-2">🌱</div>
+                <p className="text-sm text-muted">No activity yet — start practicing!</p>
+              </div>
+            )}
+          </Card>
+        </motion.div>
       </div>
     </div>
   );
 }
 
-function Row({ k, v, icon }: { k: string; v: string; icon: React.ReactNode }) {
+function TRow({ label, value, icon }: { label: string; value: string; icon: string }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="flex items-center gap-2 text-muted">{icon} {k}</span>
-      <span className="font-semibold">{v}</span>
+    <div className="flex items-center justify-between px-1">
+      <span className="flex items-center gap-2 text-muted">{icon} {label}</span>
+      <span className="font-semibold">{value}</span>
     </div>
   );
 }
 
-function QuickAction({ to, icon, label, tone }: { to: string; icon: React.ReactNode; label: string; tone: 'brand' | 'warning' | 'accent' | 'danger' }) {
-  const tones = {
-    brand: 'bg-brand-500/10 text-brand-600 dark:text-brand-300',
-    warning: 'bg-warning/10 text-warning',
-    accent: 'bg-accent-500/10 text-accent-600',
-    danger: 'bg-danger/10 text-danger',
-  };
-  return (
-    <Link to={to} className="flex items-center gap-3 rounded-xl border surface p-3 text-sm font-medium hover:border-brand-400 transition-colors">
-      <span className={`grid h-9 w-9 place-items-center rounded-lg ${tones[tone]}`}>{icon}</span>
-      <span className="flex-1">{label}</span>
-      <ArrowRight size={16} className="text-muted" />
-    </Link>
-  );
+function cn(...c: (string | boolean | undefined)[]) {
+  return c.filter(Boolean).join(' ');
 }
