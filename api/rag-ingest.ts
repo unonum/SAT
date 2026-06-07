@@ -1,17 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso';
 
-// Images can still be large; PDFs are now extracted client-side.
-// maxDuration: 300s (Vercel Pro). Batched Turso writes keep us well within it.
-export const config = { api: { bodyParser: { sizeLimit: '10mb' }, maxDuration: 300 } };
+export const config = { maxDuration: 300, api: { bodyParser: { sizeLimit: '10mb' } } };
 
+// NOTE: pdf-parse is intentionally NOT imported here — it crashes Vercel serverless
+// at module load time by reading test files from disk. PDFs are extracted client-side
+// (pdfjs-dist in the browser) and arrive as plain text in the `text` field.
 async function extractText(filetype: string, buffer: Buffer): Promise<string> {
-  if (filetype === 'pdf') {
-    const pdfParse = (await import('pdf-parse')).default;
-    const data = await pdfParse(buffer);
-    return data.text;
-  }
-
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'image'].includes(filetype)) {
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -23,21 +18,13 @@ async function extractText(filetype: string, buffer: Buffer): Promise<string> {
     const base64 = buffer.toString('base64');
     const resp = await openai.chat.completions.create({
       model: 'gpt-4o',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: { url: `data:${mime};base64,${base64}` },
-            },
-            {
-              type: 'text',
-              text: 'Extract all text from this image exactly as written. If there are math equations, write them out in plain text.',
-            },
-          ],
-        },
-      ],
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
+          { type: 'text', text: 'Extract all text from this image exactly as written. If there are math equations, write them out in plain text.' },
+        ],
+      }],
     });
     return resp.choices[0]?.message?.content ?? '';
   }
@@ -63,7 +50,7 @@ async function extractText(filetype: string, buffer: Buffer): Promise<string> {
   return buffer.toString('utf-8');
 }
 
-const MAX_CHUNKS = 600; // ~300k chars — enough for a full SAT book
+const MAX_CHUNKS = 600;
 
 function chunkText(text: string, size = 500, overlap = 50): string[] {
   const chunks: string[] = [];
@@ -78,7 +65,6 @@ function chunkText(text: string, size = 500, overlap = 50): string[] {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -88,11 +74,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await ensureRagSchema();
   } catch (schemaErr: unknown) {
     const msg = schemaErr instanceof Error ? schemaErr.message : String(schemaErr);
-    console.error('[rag-ingest] schema init failed:', msg);
     return res.status(500).json({ error: `DB init failed: ${msg}` });
   }
 
-  // GET ?list=true — return list of sources
   if (req.method === 'GET') {
     if (req.query.list === 'true') {
       const sources = await listSources();
@@ -111,7 +95,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // PDFs are extracted client-side and sent as plain text to stay under Vercel's 4.5MB body limit.
     const text = preExtractedText
       ? String(preExtractedText)
       : await extractText(filetype, Buffer.from(base64data, 'base64'));
@@ -126,7 +109,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Embed in batches of 20, collect all rows, then batch-write to Turso
     const rows: Parameters<typeof upsertChunkBatch>[0] = [];
     for (let i = 0; i < chunks.length; i += 20) {
       const batch = chunks.slice(i, i + 20);
@@ -135,12 +117,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         input: batch,
       });
       for (let j = 0; j < batch.length; j++) {
-        const globalIdx = i + j;
         rows.push({
-          id: `chunk-${filename}-${globalIdx}-${now}`,
+          id: `chunk-${filename}-${i + j}-${now}`,
           source_name: filename,
           source_type: filetype,
-          chunk_index: globalIdx,
+          chunk_index: i + j,
           content: batch[j],
           embedding: embResp.data[j].embedding,
           created_at: now,
@@ -148,11 +129,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
     await upsertChunkBatch(rows);
-    const chunkCount = rows.length;
 
-    return res.status(200).json({ ok: true, chunks: chunkCount, source: filename });
+    return res.status(200).json({ ok: true, chunks: rows.length, source: filename });
   } catch (err: unknown) {
-    console.error('rag-ingest error:', err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
