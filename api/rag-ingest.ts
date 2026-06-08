@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ensureRagSchema, upsertChunkBatch, listSources } from './_lib/turso.js';
 
-export const config = { maxDuration: 300, api: { bodyParser: { sizeLimit: '10mb' } } };
+export const config = { maxDuration: 300, api: { bodyParser: { sizeLimit: '4mb' } } };
 
 // NOTE: pdf-parse is intentionally NOT imported here — it crashes Vercel serverless
 // at module load time by reading test files from disk. PDFs are extracted client-side
@@ -89,9 +89,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { filename, filetype, data: base64data, text: preExtractedText } = req.body ?? {};
+  const {
+    filename, filetype, data: base64data, text: preExtractedText,
+    uploadId, uploadStartedAt, batchIndex = 0, totalBatches = 1,
+  } = req.body ?? {};
   if (!filename || !filetype || (!base64data && !preExtractedText)) {
     return res.status(400).json({ error: 'filename, filetype, and either data or text are required' });
+  }
+  const parsedBatchIndex = Number(batchIndex);
+  const parsedTotalBatches = Number(totalBatches);
+  if (
+    !Number.isInteger(parsedBatchIndex) || parsedBatchIndex < 0 ||
+    !Number.isInteger(parsedTotalBatches) || parsedTotalBatches < 1 ||
+    parsedBatchIndex >= parsedTotalBatches
+  ) {
+    return res.status(400).json({ error: 'Invalid batch metadata' });
   }
 
   try {
@@ -104,7 +116,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const chunks = chunkText(text);
-    const now = Date.now();
+    const now = Number.isFinite(Number(uploadStartedAt)) ? Number(uploadStartedAt) : Date.now();
+    const stableUploadId = String(uploadId || `${filename}-${now}`);
+    const chunkIndexOffset = parsedBatchIndex * MAX_CHUNKS;
 
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -118,10 +132,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       for (let j = 0; j < batch.length; j++) {
         rows.push({
-          id: `chunk-${filename}-${i + j}-${now}`,
+          id: `chunk-${stableUploadId}-${chunkIndexOffset + i + j}`,
           source_name: filename,
           source_type: filetype,
-          chunk_index: i + j,
+          chunk_index: chunkIndexOffset + i + j,
           content: batch[j],
           embedding: embResp.data[j].embedding,
           created_at: now,
@@ -130,7 +144,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     await upsertChunkBatch(rows);
 
-    return res.status(200).json({ ok: true, chunks: rows.length, source: filename });
+    return res.status(200).json({
+      ok: true, chunks: rows.length, source: filename,
+      batchIndex: parsedBatchIndex, totalBatches: parsedTotalBatches,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
