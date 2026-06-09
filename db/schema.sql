@@ -50,3 +50,22 @@ CREATE TABLE IF NOT EXISTS rag_questions (
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rag_questions_topic ON rag_questions(topic, difficulty);
+
+
+-- Questions already shown to each student, including abandoned sessions.
+CREATE TABLE IF NOT EXISTS question_exposures (
+  user_email TEXT NOT NULL,
+  question_id TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  exposed_at INTEGER NOT NULL,
+  PRIMARY KEY (user_email, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_question_exposures_user ON question_exposures(user_email, exposed_at);
+
+
+-- Embeddings for generated question patterns and semantic duplicate checks.
+CREATE TABLE IF NOT EXISTS rag_question_vectors (
+  question_id TEXT PRIMARY KEY,
+  embedding TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);

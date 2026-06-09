@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useStore } from '@/lib/store';
-import { selectAdaptiveQuestions } from '@/lib/adaptive';
-import { questionsByTopic } from '@/lib/questionBank';
+import { QUESTION_BANK } from '@/lib/questionBank';
+import { createNovelTestSession } from '@/lib/ragClient';
 import { TOPICS } from '@/lib/topics';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
@@ -28,20 +28,26 @@ const MODES: ModeDef[] = [
 ];
 
 export default function DailyPractice() {
-  const { attempts } = useStore();
+  const { attempts, user } = useStore();
   const [active, setActive] = useState<{ questions: Question[]; def: ModeDef } | null>(null);
   const [topicMode, setTopicMode] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const start = (def: ModeDef, topics?: TopicId[]) => {
-    let questions: Question[];
-    if (topics) {
-      questions = topics.flatMap((t) => questionsByTopic(t)).slice(0, def.count);
-    } else if (def.mode === 'bootcamp') {
-      questions = selectAdaptiveQuestions(attempts, def.count, { mode: 'weakness' });
-    } else {
-      questions = selectAdaptiveQuestions(attempts, def.count, { mode: 'balanced' });
+  const start = async (def: ModeDef, topics?: TopicId[]) => {
+    setLoading(true);
+    setError('');
+    try {
+      const questions = await createNovelTestSession({
+        email: user?.email ?? '', mode: def.mode, count: def.count,
+        topics, attempts, fallbackQuestions: QUESTION_BANK,
+      });
+      setActive({ questions, def });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create practice questions');
+    } finally {
+      setLoading(false);
     }
-    setActive({ questions, def });
   };
 
   if (active) {
@@ -50,7 +56,9 @@ export default function DailyPractice() {
 
   return (
     <div className="space-y-6">
-      <SectionTitle title="Practice" subtitle="Pick a mode — every question is chosen by your adaptive engine." />
+      <SectionTitle title="Practice" subtitle="Vector-grounded questions are generated uniquely for your history." />
+      {loading && <p className="text-sm text-muted">Building novel questions from the vector library…</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {MODES.map((m, i) => (

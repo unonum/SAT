@@ -1,6 +1,6 @@
 import type { Question, TopicId } from './types';
 
-/** Extract text from a PDF file in the browser using pdf.js to avoid Vercel's 4.5MB body limit. */
+/** Extract text from a PDF file in the browser so the binary never crosses the function boundary. */
 async function extractPdfTextInBrowser(file: File): Promise<string> {
   const pdfjsLib = await import('pdfjs-dist');
   // Point the worker at the bundled worker file served from node_modules
@@ -24,62 +24,66 @@ async function extractPdfTextInBrowser(file: File): Promise<string> {
   return parts.join('\n');
 }
 
-export async function ingestFile(
-  filename: string,
-  filetype: string,
-  base64data: string
-): Promise<{ ok: boolean; chunks: number }> {
-  return ingestFileWithProgress(filename, filetype, base64data);
-}
+// Keep each PDF request far below Vercel's fixed 4.5 MB function payload limit.
+// This also stays below the API's 600-chunk cap (about 270,000 characters).
+const PDF_TEXT_BATCH_CHAR_LIMIT = 200_000;
+const MAX_SINGLE_REQUEST_BYTES = 4_000_000;
 
-/** Ingest a file. For PDFs, extracts text client-side first to avoid Vercel's 4.5MB body limit. */
-export async function ingestFileWithProgress(
-  filename: string,
-  filetype: string,
-  base64data: string,
-  onProgress?: (pct: number) => void,
-  originalFile?: File
-): Promise<{ ok: boolean; chunks: number }> {
-  let body: string;
+type IngestResponse = { ok: boolean; chunks: number };
 
-  if (filetype === 'pdf' && originalFile) {
-    // Extract text in-browser (avoids sending the raw PDF binary over the wire)
-    onProgress?.(5);
-    const text = await extractPdfTextInBrowser(originalFile);
-    onProgress?.(20);
-    body = JSON.stringify({ filename, filetype, text });
-  } else {
-    body = JSON.stringify({ filename, filetype, data: base64data });
+function splitTextIntoBatches(text: string, maxChars = PDF_TEXT_BATCH_CHAR_LIMIT): string[] {
+  const batches: string[] = [];
+  let start = 0;
+
+  while (start < text.length) {
+    let end = Math.min(start + maxChars, text.length);
+    if (end < text.length) {
+      const minimumBreak = start + Math.floor(maxChars * 0.75);
+      const newlineBreak = text.lastIndexOf('\n', end);
+      const spaceBreak = text.lastIndexOf(' ', end);
+      const naturalBreak = Math.max(newlineBreak, spaceBreak);
+      if (naturalBreak >= minimumBreak) end = naturalBreak + 1;
+    }
+
+    const batch = text.slice(start, end).trim();
+    if (batch) batches.push(batch);
+    start = end;
   }
 
+  return batches;
+}
+
+function createUploadId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function postIngestRequest(
+  body: string,
+  onUploadProgress?: (fraction: number) => void
+): Promise<IngestResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/rag-ingest');
     xhr.setRequestHeader('Content-Type', 'application/json');
 
-    xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable && onProgress) {
-        const uploadPct = Math.round((e.loaded / e.total) * 70);
-        onProgress(filetype === 'pdf' ? 20 + uploadPct : uploadPct);
-      }
-    });
-
-    xhr.upload.addEventListener('load', () => {
-      onProgress?.(90);
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onUploadProgress?.(event.loaded / event.total);
     });
 
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress?.(100);
         try {
-          resolve(JSON.parse(xhr.responseText));
+          resolve(JSON.parse(xhr.responseText) as IngestResponse);
         } catch {
           reject(new Error('Invalid response from server'));
         }
       } else {
         try {
-          const err = JSON.parse(xhr.responseText);
-          reject(new Error((err as { error?: string }).error ?? `Server error ${xhr.status}`));
+          const err = JSON.parse(xhr.responseText) as { error?: string };
+          reject(new Error(err.error ?? `Server error ${xhr.status}`));
         } catch {
           reject(new Error(`Server error ${xhr.status}`));
         }
@@ -88,9 +92,111 @@ export async function ingestFileWithProgress(
 
     xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
-
     xhr.send(body);
   });
+}
+
+export async function ingestFile(
+  filename: string,
+  filetype: string,
+  base64data: string
+): Promise<IngestResponse> {
+  return ingestFileWithProgress(filename, filetype, base64data);
+}
+
+/** Extract PDFs client-side and send their text in bounded batches below Vercel's payload limit. */
+export async function ingestFileWithProgress(
+  filename: string,
+  filetype: string,
+  base64data: string,
+  onProgress?: (pct: number) => void,
+  originalFile?: File
+): Promise<IngestResponse> {
+  if (filetype === 'pdf' && originalFile) {
+    onProgress?.(5);
+    const text = await extractPdfTextInBrowser(originalFile);
+    const textBatches = splitTextIntoBatches(text);
+    if (textBatches.length === 0) throw new Error('No text could be extracted from the PDF');
+
+    const uploadId = createUploadId();
+    const uploadStartedAt = Date.now();
+    let chunks = 0;
+    onProgress?.(20);
+
+    for (let batchIndex = 0; batchIndex < textBatches.length; batchIndex++) {
+      const body = JSON.stringify({
+        filename,
+        filetype,
+        text: textBatches[batchIndex],
+        uploadId,
+        uploadStartedAt,
+        batchIndex,
+        totalBatches: textBatches.length,
+      });
+      const result = await postIngestRequest(body, (fraction) => {
+        const completedFraction = (batchIndex + fraction) / textBatches.length;
+        onProgress?.(20 + Math.round(completedFraction * 70));
+      });
+      chunks += result.chunks;
+      onProgress?.(20 + Math.round(((batchIndex + 1) / textBatches.length) * 70));
+    }
+
+    onProgress?.(100);
+    return { ok: true, chunks };
+  }
+
+  const body = JSON.stringify({ filename, filetype, data: base64data });
+  if (new Blob([body]).size > MAX_SINGLE_REQUEST_BYTES) {
+    throw new Error('File is too large to upload directly. Use a PDF or a file smaller than 3 MB.');
+  }
+
+  const result = await postIngestRequest(body, (fraction) => {
+    onProgress?.(Math.round(fraction * 90));
+  });
+  onProgress?.(100);
+  return result;
+}
+
+export async function createNovelTestSession({
+  email,
+  mode,
+  count,
+  topics = [],
+  attempts,
+  fallbackQuestions,
+}: {
+  email: string;
+  mode: string;
+  count: number;
+  topics?: TopicId[];
+  attempts: import('./types').Attempt[];
+  fallbackQuestions: Question[];
+}): Promise<Question[]> {
+  const fallbackById = new Map(fallbackQuestions.map((question) => [question.id, question]));
+  const avoidPrompts = attempts
+    .map((attempt) => fallbackById.get(attempt.questionId)?.prompt)
+    .filter((prompt): prompt is string => Boolean(prompt));
+  const response = await fetch('/api/test-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      mode,
+      count,
+      topics,
+      attempts: attempts.map(({ questionId, topic, difficulty, correct, ts }) => ({
+        questionId, topic, difficulty, correct, ts,
+      })),
+      avoidPrompts,
+      fallbackQuestions,
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unable to create a novel test' }));
+    throw new Error((error as { error?: string }).error ?? 'Unable to create a novel test');
+  }
+  const data = await response.json() as { questions: Question[] };
+  return data.questions;
 }
 
 export async function generateRagQuestions(

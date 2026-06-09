@@ -4,23 +4,44 @@ import { useStore } from '@/lib/store';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
 import {
-  EVAL_TESTS, buildEvalTest, evalSummary, evalSessions, evalTestSize,
+  EVAL_TESTS, evalSummary, evalSessions, evalTestSize,
   benchmarkProgress, benchmarkBaseline, type EvalTestDef,
 } from '@/lib/evaluation';
 import { relativeDate } from '@/lib/utils';
 import {
   ClipboardCheck, Clock, ListChecks, Play, TrendingUp, History,
   Database, Trophy, ArrowLeft, Target, Rocket, CheckCircle2, Lock,
-  ShieldCheck,
+  ShieldCheck, Loader2,
 } from 'lucide-react';
 import type { Question } from '@/lib/types';
 import { computeTopicMastery } from '@/lib/adaptive';
 import { TOPICS } from '@/lib/topics';
+import { createNovelTestSession } from '@/lib/ragClient';
+import { QUESTION_BANK } from '@/lib/questionBank';
 
 export default function Evaluation() {
   const attempts = useStore((s) => s.attempts);
+  const user = useStore((s) => s.user);
   const remoteEnabled = useStore((s) => s.remoteEnabled);
   const [active, setActive] = useState<{ def: EvalTestDef; questions: Question[] } | null>(null);
+  const [loadingId, setLoadingId] = useState<number | null>(null);
+  const [error, setError] = useState('');
+
+  const startEvaluation = async (def: EvalTestDef) => {
+    setLoadingId(def.id);
+    setError('');
+    try {
+      const questions = await createNovelTestSession({
+        email: user?.email ?? '', mode: def.mode, count: evalTestSize(def.id),
+        attempts, fallbackQuestions: QUESTION_BANK,
+      });
+      setActive({ def, questions });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create the evaluation');
+    } finally {
+      setLoadingId(null);
+    }
+  };
 
   if (active) {
     return (
@@ -100,7 +121,8 @@ export default function Evaluation() {
         <Pill tone={remoteEnabled ? 'success' : 'muted'}>
           <Database size={12} /> {remoteEnabled ? 'Synced to database' : 'Local mode'}
         </Pill>
-        <span className="text-xs text-muted">No question repeats across tests · history persists across devices.</span>
+        <span className="text-xs text-muted">Strict per-student novelty · vector-grounded generation · history persists across devices.</span>
+        {error && <span className="text-xs text-danger">{error}</span>}
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -159,9 +181,11 @@ export default function Evaluation() {
                 ) : (
                   <button
                     className="btn-primary w-full py-2.5"
-                    onClick={() => setActive({ def, questions: buildEvalTest(def.id) })}
+                    onClick={() => void startEvaluation(def)}
+                    disabled={loadingId !== null}
                   >
-                    <Play size={16} /> Start evaluation
+                    {loadingId === def.id ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                    {loadingId === def.id ? 'Building novel evaluation…' : 'Start evaluation'}
                   </button>
                 )}
               </Card>
