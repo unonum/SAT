@@ -1,28 +1,33 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useStore } from '@/lib/store';
-import { selectMockQuestions } from '@/lib/adaptive';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
-import { FileText, Clock, Target, ListChecks, Play, Rocket } from 'lucide-react';
+import { FileText, Clock, Target, ListChecks, Play, Rocket, Loader2 } from 'lucide-react';
 import { benchmarkBaseline } from '@/lib/evaluation';
 import type { Question } from '@/lib/types';
-import { fetchRagQuestions } from '@/lib/ragClient';
+import { createNovelTestSession } from '@/lib/ragClient';
+import { QUESTION_BANK } from '@/lib/questionBank';
 
 export default function MockTest() {
-  const { attempts, mockSettings } = useStore();
+  const { attempts, user } = useStore();
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
-  const [ragPool, setRagPool] = useState<Question[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    fetchRagQuestions()
-      .then(setRagPool)
-      .catch(() => setRagPool([]));
-  }, []);
-
-  const start = () => {
-    const qs = selectMockQuestions(attempts, 16, mockSettings, ragPool);
-    setQuestions(qs);
+  const start = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const qs = await createNovelTestSession({
+        email: user?.email ?? '', mode: 'mock', count: 16, attempts, fallbackQuestions: QUESTION_BANK,
+      });
+      setQuestions(qs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create the test');
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (questions) {
@@ -55,9 +60,11 @@ export default function MockTest() {
           <Info icon={<Target size={18} />} label="Sections" value="Math + RW" />
         </div>
 
-        <button className="btn-primary mt-8 px-8 py-3.5 text-base" onClick={start}>
-          <Play size={18} /> Begin mock test
+        <button className="btn-primary mt-8 px-8 py-3.5 text-base" onClick={start} disabled={loading}>
+          {loading ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
+          {loading ? 'Building a novel test…' : 'Begin mock test'}
         </button>
+        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
       </Card>
     </div>
   );
