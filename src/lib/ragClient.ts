@@ -157,6 +157,48 @@ export async function ingestFileWithProgress(
   return result;
 }
 
+export async function createNovelTestSession({
+  email,
+  mode,
+  count,
+  topics = [],
+  attempts,
+  fallbackQuestions,
+}: {
+  email: string;
+  mode: string;
+  count: number;
+  topics?: TopicId[];
+  attempts: import('./types').Attempt[];
+  fallbackQuestions: Question[];
+}): Promise<Question[]> {
+  const fallbackById = new Map(fallbackQuestions.map((question) => [question.id, question]));
+  const avoidPrompts = attempts
+    .map((attempt) => fallbackById.get(attempt.questionId)?.prompt)
+    .filter((prompt): prompt is string => Boolean(prompt));
+  const response = await fetch('/api/test-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      mode,
+      count,
+      topics,
+      attempts: attempts.map(({ questionId, topic, difficulty, correct, ts }) => ({
+        questionId, topic, difficulty, correct, ts,
+      })),
+      avoidPrompts,
+      fallbackQuestions,
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unable to create a novel test' }));
+    throw new Error((error as { error?: string }).error ?? 'Unable to create a novel test');
+  }
+  const data = await response.json() as { questions: Question[] };
+  return data.questions;
+}
+
 export async function generateRagQuestions(
   topic: string,
   difficulty: string,

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '@/lib/store';
-import { computeAllMastery, selectAdaptiveQuestions } from '@/lib/adaptive';
+import { computeAllMastery } from '@/lib/adaptive';
 import { TOPIC_MAP, TOPICS } from '@/lib/topics';
 import { MISTAKE_LABELS } from '@/lib/tutor';
 import QuestionRunner from '@/components/QuestionRunner';
@@ -20,12 +20,16 @@ import {
   Tooltip,
   Cell,
 } from 'recharts';
-import { Target, Clock, Wrench } from 'lucide-react';
+import { Target, Clock, Wrench, Loader2 } from 'lucide-react';
+import { createNovelTestSession } from '@/lib/ragClient';
+import { QUESTION_BANK } from '@/lib/questionBank';
 
 export default function Weakness() {
-  const { attempts } = useStore();
+  const { attempts, user } = useStore();
   const mastery = useMemo(() => computeAllMastery(attempts), [attempts]);
   const [repair, setRepair] = useState<Question[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   if (repair) {
     return <QuestionRunner questions={repair} mode="weakness-repair" title="Weakness Repair Mode" />;
@@ -53,19 +57,33 @@ export default function Weakness() {
     .map(([k, v]) => ({ label: MISTAKE_LABELS[k as MistakeCategory], count: v }))
     .sort((a, b) => b.count - a.count);
 
-  const startRepair = () => {
-    const qs = selectAdaptiveQuestions(attempts, 8, { mode: 'weakness' });
-    setRepair(qs);
+  const startRepair = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const topics = [...mastery].sort((a, b) => a.mastery - b.mastery).slice(0, 3).map((item) => item.topic);
+      const questions = await createNovelTestSession({
+        email: user?.email ?? '', mode: 'weakness-repair', count: 8, topics,
+        attempts, fallbackQuestions: QUESTION_BANK,
+      });
+      setRepair(questions);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create repair questions');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      {error && <p className="text-sm text-danger">{error}</p>}
       <SectionTitle
         title="Weakness Lab"
         subtitle="Exactly where you're losing points — and how to fix it."
         action={
-          <button className="btn-primary px-4 py-2 text-sm" onClick={startRepair}>
-            <Wrench size={15} /> Start repair mode
+          <button className="btn-primary px-4 py-2 text-sm" onClick={startRepair} disabled={loading}>
+            {loading ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />}
+            {loading ? 'Building novel repair…' : 'Start repair mode'}
           </button>
         }
       />

@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@/lib/store';
 import { TOPICS } from '@/lib/topics';
-import { questionsByTopic } from '@/lib/questionBank';
+import { QUESTION_BANK, questionsByTopic } from '@/lib/questionBank';
+import { createNovelTestSession } from '@/lib/ragClient';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card } from '@/components/ui';
-import { Target, Gauge, Clock, CheckCircle2, ArrowRight } from 'lucide-react';
+import { Target, Gauge, Clock, CheckCircle2, ArrowRight, Loader2 } from 'lucide-react';
 import type { Question } from '@/lib/types';
 
 // Full-coverage diagnostic: for every topic, sample across difficulty so we
@@ -28,12 +29,32 @@ function buildDiagnostic(): Question[] {
 
 export default function Assessment() {
   const navigate = useNavigate();
-  const { user, updateProfile, markDiagnosticDone } = useStore();
+  const { user, attempts, updateProfile, markDiagnosticDone } = useStore();
   const [phase, setPhase] = useState<'intro' | 'test'>('intro');
   const [target, setTarget] = useState(user?.targetScore ?? 1450);
   const [hours, setHours] = useState(user?.studyHoursPerDay ?? 1);
   const [testDate, setTestDate] = useState(user?.testDate ?? '');
-  const questions = buildDiagnostic();
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const diagnosticSize = buildDiagnostic().length;
+
+  const startDiagnostic = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const generated = await createNovelTestSession({
+        email: user?.email ?? '', mode: 'diagnostic', count: diagnosticSize,
+        attempts, fallbackQuestions: QUESTION_BANK,
+      });
+      setQuestions(generated);
+      setPhase('test');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create the diagnostic');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (phase === 'test') {
     return (
@@ -62,7 +83,7 @@ export default function Assessment() {
           </div>
           <h1 className="font-display text-3xl font-extrabold">Let's find your starting point</h1>
           <p className="mt-2 text-muted">
-            This {questions.length}-question smart diagnostic covers all 8 SAT skill areas. We'll measure
+            This {diagnosticSize}-question smart diagnostic covers all 8 SAT skill areas. We'll measure
             your accuracy, timing, and confidence to build your personalized plan.
           </p>
         </div>
@@ -110,9 +131,11 @@ export default function Assessment() {
             <input type="date" className="input" value={testDate} onChange={(e) => setTestDate(e.target.value)} />
           </div>
 
-          <button className="btn-primary w-full py-3" onClick={() => setPhase('test')}>
-            Start diagnostic <ArrowRight size={18} />
+          <button className="btn-primary w-full py-3" onClick={startDiagnostic} disabled={loading}>
+            {loading ? <Loader2 size={18} className="animate-spin" /> : <ArrowRight size={18} />}
+            {loading ? 'Building your novel diagnostic…' : 'Start diagnostic'}
           </button>
+          {error && <p className="text-center text-sm text-danger">{error}</p>}
           <p className="text-center text-xs text-muted">Takes about 8 minutes · you can pause anytime</p>
         </Card>
       </div>
