@@ -1,37 +1,75 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '@/lib/store';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
-import { FileText, Clock, Target, ListChecks, Play, Rocket, Loader2 } from 'lucide-react';
+import { FileText, Clock, Target, ListChecks, Play, Rocket } from 'lucide-react';
 import { benchmarkBaseline } from '@/lib/evaluation';
-import type { Question } from '@/lib/types';
-import { createNovelTestSession } from '@/lib/ragClient';
-import { QUESTION_BANK } from '@/lib/questionBank';
+import { selectMockQuestions } from '@/lib/adaptive';
+import type { Question, MockSettings } from '@/lib/types';
+import { createNovelTestSession, fetchRagQuestions } from '@/lib/ragClient';
+
+const MOCK_COUNT = 16;
 
 export default function MockTest() {
-  const { attempts, user } = useStore();
+  const { attempts, user, mockSettings } = useStore();
+  const remoteEnabled = useStore((s) => s.remoteEnabled);
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const start = async () => {
-    setLoading(true);
+  // Pre-loaded RAG pool — fetched silently on mount
+  const [storedRag, setStoredRag] = useState<Question[]>([]);
+  const generatingRef = useRef(false);
+
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    fetchRagQuestions().then(setStoredRag).catch(() => {});
+  }, [remoteEnabled]);
+
+  const start = () => {
     setError('');
-    try {
-      const qs = await createNovelTestSession({
-        email: user?.email ?? '', mode: 'mock', count: 16, attempts, fallbackQuestions: QUESTION_BANK,
-      });
-      setQuestions(qs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to create the test');
-    } finally {
-      setLoading(false);
+    const seenIds = new Set(attempts.map((a) => a.questionId));
+
+    // 1. Pick from pre-loaded RAG questions (already in memory — instant)
+    const ragUnseen = storedRag.filter((q) => !seenIds.has(q.id));
+    const DEFAULT_SETTINGS: MockSettings = { difficultyFilter: {}, globalDifficulty: ['easy', 'medium', 'hard'] };
+    const fallback = selectMockQuestions(attempts, MOCK_COUNT, mockSettings ?? DEFAULT_SETTINGS);
+
+    let qs: Question[];
+    if (ragUnseen.length >= MOCK_COUNT) {
+      qs = ragUnseen.sort(() => Math.random() - 0.5).slice(0, MOCK_COUNT);
+    } else if (ragUnseen.length > 0) {
+      const fill = fallback.filter((q) => !seenIds.has(q.id) && !ragUnseen.some((r) => r.id === q.id));
+      qs = [...ragUnseen, ...fill].slice(0, MOCK_COUNT);
+    } else {
+      qs = fallback;
+    }
+
+    setQuestions(qs);
+
+    // 2. Background: generate fresh questions for next mock (fire & forget)
+    if (remoteEnabled && user?.email && !generatingRef.current) {
+      generatingRef.current = true;
+      void createNovelTestSession({
+        email: user.email,
+        mode: 'mock',
+        count: MOCK_COUNT * 2,
+        attempts,
+        fallbackQuestions: fallback,
+      })
+        .then((newQs) =>
+          setStoredRag((prev) => {
+            const existing = new Set(prev.map((q) => q.id));
+            return [...prev, ...newQs.filter((q) => !existing.has(q.id))];
+          })
+        )
+        .catch(() => {})
+        .finally(() => { generatingRef.current = false; });
     }
   };
 
   if (questions) {
-    return <QuestionRunner questions={questions} mode="mock" title="Full SAT Mock Test" timed />;
+    return <QuestionRunner questions={questions} mode="mock" title="Full SAT Mock Test" timed returnTo="/app/mock" />;
   }
 
   return (
@@ -55,14 +93,13 @@ export default function MockTest() {
         </p>
 
         <div className="mx-auto mt-6 grid max-w-lg grid-cols-3 gap-4">
-          <Info icon={<ListChecks size={18} />} label="Questions" value="16" />
+          <Info icon={<ListChecks size={18} />} label="Questions" value={String(MOCK_COUNT)} />
           <Info icon={<Clock size={18} />} label="Timed" value="Yes" />
           <Info icon={<Target size={18} />} label="Sections" value="Math + RW" />
         </div>
 
-        <button className="btn-primary mt-8 px-8 py-3.5 text-base" onClick={start} disabled={loading}>
-          {loading ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
-          {loading ? 'Building a novel test…' : 'Begin mock test'}
+        <button className="btn-primary mt-8 px-8 py-3.5 text-base" onClick={start}>
+          <Play size={18} /> Begin mock test
         </button>
         {error && <p className="mt-3 text-sm text-danger">{error}</p>}
       </Card>
