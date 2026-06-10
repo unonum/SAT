@@ -18,10 +18,11 @@ interface Props {
   mode: PracticeMode;
   title: string;
   timed?: boolean;
+  returnTo?: string;
   onComplete?: (correct: number, total: number) => void;
 }
 
-export default function QuestionRunner({ questions, mode, title, timed, onComplete }: Props) {
+export default function QuestionRunner({ questions, mode, title, timed, returnTo, onComplete }: Props) {
   const { recordAttempt, finishSession, attempts } = useStore();
   const [idx, setIdx] = useState(0);
   const [selected, setSelected] = useState<'A' | 'B' | 'C' | 'D' | null>(null);
@@ -170,14 +171,14 @@ export default function QuestionRunner({ questions, mode, title, timed, onComple
           )}
 
           <a
-            href={benchmarkEarned ? '/app' : '/app/evaluation'}
+            href={benchmarkEarned ? '/app' : (returnTo ?? '/app/evaluation')}
             className={`px-7 py-3 inline-flex rounded-xl font-semibold items-center gap-2 transition ${
               benchmarkEarned
                 ? 'bg-white text-brand-600 hover:bg-white/90 shadow-lg'
                 : 'btn-primary'
             }`}
           >
-            {benchmarkEarned ? '🚀 Go to my dashboard' : 'Back to evaluations'}
+            {benchmarkEarned ? '🚀 Go to my dashboard' : (returnTo ? 'Back to practice' : 'Back to evaluations')}
             <ArrowRight size={16} />
           </a>
         </div>

@@ -132,7 +132,7 @@ export default function DailyPractice() {
   };
 
   if (active) {
-    return <QuestionRunner questions={active.questions} mode={active.def.mode} title={active.def.title} timed={active.def.timed} />;
+    return <QuestionRunner questions={active.questions} mode={active.def.mode} title={active.def.title} timed={active.def.timed} returnTo="/app/practice" />;
   }
 
   return (
