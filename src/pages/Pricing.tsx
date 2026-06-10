@@ -53,7 +53,7 @@ export default function Pricing() {
             <div className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-brand text-white shadow-glow">
               <Target size={16} />
             </div>
-            <span className="font-display font-extrabold">Target<span className="gradient-text">1450</span></span>
+            <span className="font-display font-extrabold">Target<span className="gradient-text">1550</span></span>
           </div>
         </div>
       </header>

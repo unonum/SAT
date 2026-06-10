@@ -55,7 +55,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <Target size={20} />
         </div>
         <span className="font-display text-lg font-extrabold">
-          Target<span className="gradient-text">1450</span>
+          Target<span className="gradient-text">1550</span>
         </span>
       </NavLink>
 
@@ -221,7 +221,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </div>
             <div className="text-xs text-muted">
               {admin ? 'Admin · monitoring your students.' : (
-                <>Target <span className="font-semibold text-brand-600 dark:text-brand-300">{user?.targetScore ?? 1450}</span> · let's close the gap.</>
+                <>Target <span className="font-semibold text-brand-600 dark:text-brand-300">{user?.targetScore ?? 1550}</span> · let's close the gap.</>
               )}
             </div>
           </div>

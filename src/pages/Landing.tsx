@@ -25,7 +25,7 @@ export default function Landing() {
             <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-brand text-white shadow-glow">
               <Target size={20} />
             </div>
-            <span className="font-display text-lg font-extrabold">Target<span className="gradient-text">1450</span></span>
+            <span className="font-display text-lg font-extrabold">Target<span className="gradient-text">1550</span></span>
           </Link>
           <nav className="hidden items-center gap-7 text-sm font-medium text-muted md:flex">
             {[['#how', 'How it works'], ['#features', 'Features'], ['#parents', 'Parents'], ['/pricing', 'Pricing']].map(([href, label]) =>
@@ -78,7 +78,7 @@ export default function Landing() {
           </motion.h1>
 
           <motion.p {...fadeUp(0.16)} className="mx-auto mt-7 max-w-2xl text-xl text-muted leading-relaxed">
-            Target1450 studies every answer, your timing, and your confidence — then builds the
+            Target1550 studies every answer, your timing, and your confidence — then builds the
             exact questions you need. No noise. Just your fastest path to your target score.
           </motion.p>
 
@@ -331,14 +331,14 @@ export default function Landing() {
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-5 py-8 sm:flex-row sm:px-8">
           <div className="flex items-center gap-2.5">
             <div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-brand text-white"><Target size={14} /></div>
-            <span className="font-display font-extrabold">Target<span className="gradient-text">1450</span></span>
+            <span className="font-display font-extrabold">Target<span className="gradient-text">1550</span></span>
           </div>
           <nav className="flex gap-6 text-xs text-muted">
             <Link to="/pricing" className="hover:text-brand-500 transition-colors">Pricing</Link>
             <a href="#features" className="hover:text-brand-500 transition-colors">Features</a>
             <Link to="/login" className="hover:text-brand-500 transition-colors">Login</Link>
           </nav>
-          <p className="text-xs text-muted">© {new Date().getFullYear()} Target1450</p>
+          <p className="text-xs text-muted">© {new Date().getFullYear()} Target1550</p>
         </div>
       </footer>
     </div>

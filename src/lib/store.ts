@@ -305,7 +305,7 @@ export const useStore = create<AppState>()(
             const { daily, gamification } = rebuildFromAttempts(attempts);
             profiles[email] = {
               user: profiles[email]?.user ?? {
-                name: '', email, role: 'student', targetScore: 1450, studyHoursPerDay: 1, createdAt: Date.now(),
+                name: '', email, role: 'student', targetScore: 1550, studyHoursPerDay: 1, createdAt: Date.now(),
               },
               hasDiagnostic: true,
               attempts,
@@ -319,7 +319,7 @@ export const useStore = create<AppState>()(
       },
     }),
     {
-      name: 't1450-store',
+      name: 't1550-store',
       version: 2,
       // v1 stored a single flat profile; v2 partitions by email. Reset cleanly.
       migrate: (persisted: any, version) => {

@@ -64,7 +64,7 @@ function fromRow(r: AttemptRow): Attempt {
   };
 }
 
-const PENDING_KEY = 't1450-pending-attempts';
+const PENDING_KEY = 't1550-pending-attempts';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface PendingEntry { email: string; payload: ReturnType<typeof toPayload> }

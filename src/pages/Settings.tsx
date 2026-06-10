@@ -8,7 +8,7 @@ export default function Settings() {
   const { user, updateProfile, theme, setTheme, resetAll } = useStore();
   const navigate = useNavigate();
   const [name, setName] = useState(user?.name ?? '');
-  const [target, setTarget] = useState(user?.targetScore ?? 1450);
+  const [target, setTarget] = useState(user?.targetScore ?? 1550);
   const [hours, setHours] = useState(user?.studyHoursPerDay ?? 1);
   const [testDate, setTestDate] = useState(user?.testDate ?? '');
   const [saved, setSaved] = useState(false);

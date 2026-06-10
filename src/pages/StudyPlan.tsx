@@ -25,7 +25,7 @@ export default function StudyPlan() {
   const mastery = useMemo(() => computeAllMastery(attempts), [attempts]);
   const plan = useMemo(() => generateStudyPlan(user, mastery, 7), [user, mastery]);
   const score = estimateScore(attempts);
-  const target = user?.targetScore ?? 1450;
+  const target = user?.targetScore ?? 1550;
   const progress = Math.min(100, Math.round(((score.total - 400) / (target - 400)) * 100));
 
   const daysToTest = user?.testDate

@@ -32,7 +32,7 @@ export default function Auth({ signup }: { signup?: boolean }) {
       name: result.name ?? 'Student',
       email: normalized,
       role: result.isAdmin ? 'admin' : 'student',
-      targetScore: 1450,
+      targetScore: 1550,
       studyHoursPerDay: 1,
     });
 
@@ -72,7 +72,7 @@ export default function Auth({ signup }: { signup?: boolean }) {
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-white/20 backdrop-blur-sm">
             <Target size={20} />
           </div>
-          <span className="font-display text-lg font-extrabold">Target1450</span>
+          <span className="font-display text-lg font-extrabold">Target1550</span>
         </Link>
 
         <motion.div
@@ -113,7 +113,7 @@ export default function Auth({ signup }: { signup?: boolean }) {
             <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-brand text-white shadow-glow">
               <Target size={20} />
             </div>
-            <span className="font-display text-lg font-extrabold">Target<span className="gradient-text">1450</span></span>
+            <span className="font-display text-lg font-extrabold">Target<span className="gradient-text">1550</span></span>
           </Link>
 
           <div className="mb-1 flex items-center gap-2">

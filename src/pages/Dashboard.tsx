@@ -32,7 +32,7 @@ export default function Dashboard() {
   const lvl = levelFromXp(gamification.xp);
 
   const weakest = [...mastery].filter((m) => m.attempts > 0).sort((a, b) => a.mastery - b.mastery).slice(0, 3);
-  const gap = (user?.targetScore ?? 1450) - score.total;
+  const gap = (user?.targetScore ?? 1550) - score.total;
 
   const chartData = daily.slice(-10).map((d) => ({
     date: d.date.slice(5),
@@ -79,7 +79,7 @@ export default function Dashboard() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
           { label: 'Estimated SAT score', value: score.total, sub: `Math ${score.math} · RW ${score.rw}`, icon: <Target size={20} />, accent: 'brand' as const, delay: 0.05 },
-          { label: 'Points to target', value: gap > 0 ? `${gap} pts` : '🎯 On target!', sub: `Goal ${user?.targetScore ?? 1450}`, icon: <TrendingUp size={20} />, accent: gap > 100 ? 'warning' as const : 'success' as const, delay: 0.1 },
+          { label: 'Points to target', value: gap > 0 ? `${gap} pts` : '🎯 On target!', sub: `Goal ${user?.targetScore ?? 1550}`, icon: <TrendingUp size={20} />, accent: gap > 100 ? 'warning' as const : 'success' as const, delay: 0.1 },
           { label: 'Day streak', value: `${gamification.streak} 🔥`, sub: 'Keep it going!', icon: <Flame size={20} />, accent: 'warning' as const, delay: 0.15 },
           { label: 'Level', value: lvl.level, sub: `${gamification.xp} XP`, icon: <Trophy size={20} />, accent: 'violet' as const, delay: 0.2 },
         ].map((s) => (

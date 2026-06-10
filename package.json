@@ -1,9 +1,9 @@
 {
-  "name": "target1450",
+  "name": "target1550",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Target1450 — The AI SAT Coach that finds your weaknesses and fixes them automatically.",
+  "description": "Target1550 — The AI SAT Coach that finds your weaknesses and fixes them automatically.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

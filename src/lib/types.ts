@@ -1,4 +1,4 @@
-// ---------- Domain Types for Target1450 ----------
+// ---------- Domain Types for Target1550 ----------
 
 export type Section = 'Math' | 'Reading & Writing';
 

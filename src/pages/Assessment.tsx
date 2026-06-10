@@ -31,7 +31,7 @@ export default function Assessment() {
   const navigate = useNavigate();
   const { user, attempts, updateProfile, markDiagnosticDone } = useStore();
   const [phase, setPhase] = useState<'intro' | 'test'>('intro');
-  const [target, setTarget] = useState(user?.targetScore ?? 1450);
+  const [target, setTarget] = useState(user?.targetScore ?? 1550);
   const [hours, setHours] = useState(user?.studyHoursPerDay ?? 1);
   const [testDate, setTestDate] = useState(user?.testDate ?? '');
   const [questions, setQuestions] = useState<Question[]>([]);
