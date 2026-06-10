@@ -197,6 +197,9 @@ export default function TeamDashboard() {
         ))}
       </div>
 
+      {/* ── MOCK TEST DAILY TRACKER ──────────────────────────── */}
+      <MockDailyTracker students={students} />
+
       {/* ── TARGET 1550 ROADMAP ──────────────────────────────── */}
       <Roadmap1550 students={students} />
 
@@ -1010,6 +1013,162 @@ function SubtopicDrilldown({ subtopics, attempts }: {
         </div>
       ))}
     </div>
+  );
+}
+
+// ── Mock Daily Tracker ────────────────────────────────────────────────────────
+
+interface MockSession {
+  date: string; // YYYY-MM-DD
+  total: number;
+  correct: number;
+  acc: number;
+}
+
+function getMockSessions(attempts: Attempt[]): MockSession[] {
+  const mockAttempts = attempts.filter((a) => a.mode === 'mock');
+  const byDate: Record<string, Attempt[]> = {};
+  for (const a of mockAttempts) {
+    const d = new Date(a.ts).toISOString().slice(0, 10);
+    (byDate[d] ??= []).push(a);
+  }
+  return Object.entries(byDate)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, ats]) => ({
+      date,
+      total: ats.length,
+      correct: ats.filter((a) => a.correct).length,
+      acc: Math.round((ats.filter((a) => a.correct).length / ats.length) * 100),
+    }));
+}
+
+function MockDailyTracker({ students }: { students: StudentView[] }) {
+  // Build 14-day calendar grid
+  const today = new Date();
+  const days: string[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  const studentData = students.map((s) => {
+    const sessions = getMockSessions(s.data.attempts);
+    const sessionMap = new Map(sessions.map((ses) => [ses.date, ses]));
+    const last5 = sessions.slice(-5);
+    const avgAcc = last5.length
+      ? Math.round(last5.reduce((sum, s) => sum + s.acc, 0) / last5.length)
+      : null;
+    const completedDays = sessions.filter((ses) => days.includes(ses.date)).length;
+    const latestSession = sessions[sessions.length - 1] ?? null;
+    return { ...s, sessions, sessionMap, avgAcc, completedDays, latestSession };
+  });
+
+  return (
+    <Card>
+      <SectionTitle
+        title="Daily Mock Test Tracker"
+        subtitle="Completion calendar and score trends — last 14 days per student"
+        action={<Pill tone="brand">Mock insights</Pill>}
+      />
+      <div className="space-y-6">
+        {studentData.map((s) => {
+          const completionPct = Math.round((s.completedDays / 14) * 100);
+          return (
+            <div key={s.email} className="rounded-2xl border border-[rgb(var(--border))] p-4">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-brand text-white font-bold text-sm">
+                  {s.name[0]}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-sm">{s.name}</span>
+                    {s.latestSession && (
+                      <Pill tone={s.latestSession.acc >= 70 ? 'success' : s.latestSession.acc >= 50 ? 'warning' : 'danger'}>
+                        Last: {s.latestSession.acc}% on {s.latestSession.date.slice(5)}
+                      </Pill>
+                    )}
+                    {!s.latestSession && <Pill tone="muted">No mocks yet</Pill>}
+                  </div>
+                  <div className="text-xs text-muted mt-0.5">
+                    {s.sessions.length} total mocks · {s.completedDays}/14 days completed ({completionPct}%)
+                    {s.avgAcc !== null ? ` · Avg last 5: ${s.avgAcc}%` : ''}
+                  </div>
+                </div>
+                {/* 14-day completion bar */}
+                <div className="hidden sm:flex gap-1 shrink-0">
+                  {days.map((d) => {
+                    const ses = s.sessionMap.get(d);
+                    const isToday = d === today.toISOString().slice(0, 10);
+                    return (
+                      <div
+                        key={d}
+                        title={ses ? `${d}: ${ses.acc}% (${ses.correct}/${ses.total})` : d}
+                        className={[
+                          'h-6 w-3 rounded-sm transition-all',
+                          ses
+                            ? ses.acc >= 70 ? 'bg-success' : ses.acc >= 50 ? 'bg-warning' : 'bg-danger'
+                            : isToday ? 'bg-brand-300 animate-pulse' : 'bg-slate-200 dark:bg-slate-700',
+                        ].join(' ')}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Score trend if they have mocks */}
+              {s.sessions.length >= 2 && (
+                <div className="mt-2">
+                  <div className="text-xs text-muted mb-2 font-medium">Score trend (last 7 sessions)</div>
+                  <div className="flex items-end gap-1.5 h-10">
+                    {s.sessions.slice(-7).map((ses, i) => (
+                      <div key={i} className="flex flex-col items-center gap-0.5 flex-1">
+                        <div
+                          className="w-full rounded-t-sm transition-all"
+                          style={{
+                            height: `${Math.max(4, ses.acc / 100 * 36)}px`,
+                            background: ses.acc >= 70 ? '#22c55e' : ses.acc >= 50 ? '#f59e0b' : '#ef4444',
+                          }}
+                        />
+                        <span className="text-[9px] text-muted tabular-nums">{ses.acc}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Readiness assessment */}
+              {s.sessions.length > 0 && (() => {
+                const recent = s.sessions.slice(-3);
+                const recentAvg = recent.reduce((sum, x) => sum + x.acc, 0) / recent.length;
+                const improving = s.sessions.length >= 2 && s.sessions[s.sessions.length - 1].acc > s.sessions[s.sessions.length - 2].acc;
+                const dailyDone = s.sessionMap.has(today.toISOString().slice(0, 10));
+                return (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${recentAvg >= 70 ? 'bg-success/15 text-success' : recentAvg >= 50 ? 'bg-warning/15 text-warning' : 'bg-danger/15 text-danger'}`}>
+                      {recentAvg >= 70 ? '🟢 Test-ready pace' : recentAvg >= 50 ? '🟡 Making progress' : '🔴 Needs intensive work'}
+                    </span>
+                    {improving && <span className="text-xs px-2.5 py-1 rounded-full bg-brand-500/10 text-brand-600 font-medium">📈 Improving</span>}
+                    {!dailyDone && <span className="text-xs px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-600 font-medium">⏰ Today's mock not done</span>}
+                    {dailyDone && <span className="text-xs px-2.5 py-1 rounded-full bg-success/10 text-success font-medium">✅ Today complete</span>}
+                  </div>
+                );
+              })()}
+            </div>
+          );
+        })}
+
+        {/* Legend */}
+        <div className="flex items-center gap-4 text-xs text-muted pt-1">
+          <span className="font-medium">Calendar key:</span>
+          <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-success" /> ≥70%</span>
+          <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-warning" /> 50–69%</span>
+          <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-danger" /> &lt;50%</span>
+          <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-slate-300" /> Not taken</span>
+          <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-brand-300 animate-pulse" /> Today</span>
+        </div>
+      </div>
+    </Card>
   );
 }
 

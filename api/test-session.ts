@@ -333,7 +333,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       attempts = [], avoidPrompts = [], fallbackQuestions = [],
     } = req.body ?? {};
 
-    const requestedCount = Math.max(1, Math.min(20, Number(count) || 8));
+    const requestedCount = Math.max(1, Math.min(100, Number(count) || 8));
     const attemptSummaries = (Array.isArray(attempts) ? attempts : []) as AttemptSummary[];
 
     // ── Build rich per-topic profiles from full attempt history ──────────

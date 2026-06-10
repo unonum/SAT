@@ -10,7 +10,7 @@ import { masteryLabel, relativeDate } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import {
   Trophy, Target, Flame, CheckCircle2, Brain, Dumbbell,
-  AlertTriangle, ArrowRight, Sparkles, TrendingUp,
+  AlertTriangle, ArrowRight, Sparkles, TrendingUp, FileText,
 } from 'lucide-react';
 import {
   AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -42,6 +42,12 @@ export default function Dashboard() {
   const todayAcc = todayAttempts.length
     ? Math.round((todayAttempts.filter((a) => a.correct).length / todayAttempts.length) * 100)
     : 0;
+
+  const todayMockAttempts = todayAttempts.filter((a) => a.mode === 'mock');
+  const mockDoneToday = todayMockAttempts.length > 0;
+  const mockAcc = mockDoneToday
+    ? Math.round((todayMockAttempts.filter((a) => a.correct).length / todayMockAttempts.length) * 100)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -82,6 +88,35 @@ export default function Dashboard() {
           </motion.div>
         ))}
       </div>
+
+      {/* Daily mock CTA */}
+      <motion.div {...fd(0.12)}>
+        {mockDoneToday ? (
+          <div className="flex items-center gap-4 rounded-2xl border border-success/30 bg-success/5 px-5 py-4">
+            <span className="text-2xl">✅</span>
+            <div className="flex-1">
+              <p className="font-semibold text-sm">Today's mock test complete!</p>
+              <p className="text-xs text-muted mt-0.5">{todayMockAttempts.length} questions · {mockAcc}% accuracy</p>
+            </div>
+            <Link to="/app/mock" className="text-xs font-semibold text-success hover:underline shrink-0">View results →</Link>
+          </div>
+        ) : (
+          <div className="relative overflow-hidden rounded-2xl border border-brand-500/30 bg-gradient-to-r from-brand-500/8 to-accent-500/8 px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 text-white shadow-glow">
+                <FileText size={22} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-sm">Complete today's mock test</p>
+                <p className="text-xs text-muted mt-0.5">98 questions · 134 min · Full SAT simulation with analysis</p>
+              </div>
+              <Link to="/app/mock" className="btn-primary px-4 py-2 text-sm shrink-0">
+                Start now <ArrowRight size={13} />
+              </Link>
+            </div>
+          </div>
+        )}
+      </motion.div>
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Score chart */}
