@@ -532,8 +532,17 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
       }
     }
 
+    // Last resort: include fallback questions even if seen before, to avoid hard failure
     if (!finalQuestions.length) {
-      return res.status(503).json({ error: 'No novel questions available — please try again' });
+      const lastResort = (Array.isArray(fallbackQuestions) ? fallbackQuestions : []) as ClientQuestion[];
+      for (const q of lastResort) {
+        if (finalQuestions.length >= requestedCount) break;
+        finalQuestions.push(q);
+      }
+    }
+
+    if (!finalQuestions.length) {
+      return res.status(503).json({ error: 'No questions available — please ingest more questions into the RAG database.' });
     }
 
     await saveExposures(String(email), String(mode), finalQuestions);

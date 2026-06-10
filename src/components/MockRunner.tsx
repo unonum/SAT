@@ -5,7 +5,23 @@ import { useStore } from '@/lib/store';
 import { Card, Pill } from '@/components/ui';
 import { cn, formatTime } from '@/lib/utils';
 import { TOPIC_MAP } from '@/lib/topics';
-import { Timer, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { Timer, ArrowRight, ChevronDown, ChevronUp, WifiOff } from 'lucide-react';
+
+const API = import.meta.env.VITE_API_BASE ?? '';
+
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.ok) return res;
+      if (attempt === retries) return res;
+    } catch (e) {
+      if (attempt === retries) throw e;
+    }
+    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt)); // 500ms, 1s, 2s
+  }
+  throw new Error('unreachable');
+}
 
 const RW_SECS = 64 * 60;
 const MATH_SECS = 70 * 60;
@@ -61,6 +77,8 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   const rwStartedRef = useRef<number | null>(session?.rw_started_at ?? null);
   const mathStartedRef = useRef<number | null>(session?.math_started_at ?? null);
   const savingRef = useRef(false);
+  const pendingSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveError, setSaveError] = useState(false);
 
   // Restore state from session if resuming
   const initPhase = (session?.phase ?? 'intro') as Phase;
@@ -77,7 +95,7 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   const [qStart, setQStart] = useState(Date.now());
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // ── Persist session to DB ──────────────────────────────────────────────────
+  // ── Persist session to DB (with retry + error indicator) ──────────────────
   const saveSession = useCallback(async (updates: Partial<{
     status: string; phase: string; answers_json: string;
     rw_idx: number; math_idx: number;
@@ -88,33 +106,44 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   }>) => {
     if (!email || !date || savingRef.current) return;
     savingRef.current = true;
+    const payload = JSON.stringify({
+      id: sessionIdRef.current,
+      user_email: email,
+      date,
+      started_at: startedAtRef.current,
+      rw_started_at: rwStartedRef.current,
+      math_started_at: mathStartedRef.current,
+      questions_json: JSON.stringify(questions),
+      answers_json: JSON.stringify(answers),
+      phase,
+      rw_idx: rwIdx,
+      math_idx: mathIdx,
+      rw_correct: 0, rw_total: rwQs.length,
+      math_correct: 0, math_total: mathQs.length,
+      ...updates,
+    });
     try {
-      await fetch('/api/mock-sessions', {
+      await fetchWithRetry(`${API}/api/mock-sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: sessionIdRef.current,
-          user_email: email,
-          date,
-          started_at: startedAtRef.current,
-          rw_started_at: rwStartedRef.current,
-          math_started_at: mathStartedRef.current,
-          questions_json: JSON.stringify(questions),
-          answers_json: JSON.stringify(answers),
-          phase,
-          rw_idx: rwIdx,
-          math_idx: mathIdx,
-          rw_correct: 0, rw_total: rwQs.length,
-          math_correct: 0, math_total: mathQs.length,
-          ...updates,
-        }),
+        body: payload,
       });
+      setSaveError(false);
     } catch (e) {
-      console.warn('[MockRunner] save failed', e);
+      console.warn('[MockRunner] save failed after retries', e);
+      setSaveError(true);
+      // Clear the error indicator after 8s so it doesn't persist forever
+      setTimeout(() => setSaveError(false), 8000);
     } finally {
       savingRef.current = false;
     }
   }, [email, date, questions, answers, phase, rwIdx, mathIdx, rwQs.length, mathQs.length]);
+
+  // ── Debounced per-answer save (fires 600ms after last answer) ──────────────
+  const debouncedSave = useCallback((updates: Parameters<typeof saveSession>[0]) => {
+    if (pendingSaveRef.current) clearTimeout(pendingSaveRef.current);
+    pendingSaveRef.current = setTimeout(() => { void saveSession(updates); }, 600);
+  }, [saveSession]);
 
   // ── Section timer initialization ───────────────────────────────────────────
   useEffect(() => {
@@ -188,6 +217,7 @@ export default function MockRunner({ questions, email, date, session }: Props) {
       const nextIdx = rwIdx + 1;
       if (nextIdx >= rwQs.length) {
         const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        // Section end — save immediately (no debounce)
         void saveSession({
           answers_json: JSON.stringify(newAnswers), phase: 'break', rw_idx: nextIdx,
           rw_correct: rwC, rw_total: rwQs.length,
@@ -195,9 +225,8 @@ export default function MockRunner({ questions, email, date, session }: Props) {
         setPhase('break');
       } else {
         setRwIdx(nextIdx);
-        if (nextIdx % 5 === 0) {
-          void saveSession({ answers_json: JSON.stringify(newAnswers), rw_idx: nextIdx });
-        }
+        // Per-answer debounced save — no data lost on network blip
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), rw_idx: nextIdx });
       }
     } else if (phase === 'math') {
       const nextIdx = mathIdx + 1;
@@ -205,6 +234,7 @@ export default function MockRunner({ questions, email, date, session }: Props) {
         const mathC = mathQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
         const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
         finishSession('mock', 0);
+        // Completion — save immediately (no debounce)
         void saveSession({
           answers_json: JSON.stringify(newAnswers), status: 'complete', phase: 'review',
           math_idx: nextIdx, math_correct: mathC, math_total: mathQs.length,
@@ -213,12 +243,11 @@ export default function MockRunner({ questions, email, date, session }: Props) {
         setPhase('review');
       } else {
         setMathIdx(nextIdx);
-        if (nextIdx % 5 === 0) {
-          void saveSession({ answers_json: JSON.stringify(newAnswers), math_idx: nextIdx });
-        }
+        // Per-answer debounced save
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), math_idx: nextIdx });
       }
     }
-  }, [phase, rwIdx, mathIdx, rwQs, mathQs, pending, answers, qStart, recordAttempt, finishSession, saveSession]);
+  }, [phase, rwIdx, mathIdx, rwQs, mathQs, pending, answers, qStart, recordAttempt, finishSession, saveSession, debouncedSave]);
 
   // ── INTRO ──────────────────────────────────────────────────────────────────
   if (phase === 'intro') {
@@ -322,6 +351,12 @@ export default function MockRunner({ questions, email, date, session }: Props) {
 
   return (
     <div className="mx-auto max-w-3xl">
+      {saveError && (
+        <div className="mb-3 flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
+          <WifiOff size={15} className="shrink-0" />
+          <span>Progress save failed — retrying. Don't close this tab.</span>
+        </div>
+      )}
       <div className="mb-5 flex items-center gap-4">
         <div className="flex-1">
           <div className="flex items-center justify-between text-xs text-muted mb-2">
