@@ -5,18 +5,20 @@ import { scoreHistory } from '@/lib/history';
 import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 import { computeAllMastery, estimateScore } from '@/lib/adaptive';
 import { generateWeeklyReport, MISTAKE_LABELS } from '@/lib/tutor';
-import { TOPIC_MAP, TOPICS } from '@/lib/topics';
+import { TOPIC_MAP, TOPICS, MATH_TOPICS, RW_TOPICS } from '@/lib/topics';
 import { EVAL_TESTS, evalSessions } from '@/lib/evaluation';
 import { Card, SectionTitle, Pill, Stat, MasteryBar, ProgressRing } from '@/components/ui';
 import { masteryColor, relativeDate, formatTime } from '@/lib/utils';
-import type { UserData, MistakeCategory, TopicId } from '@/lib/types';
+import type { Attempt, UserData, MistakeCategory, TopicId } from '@/lib/types';
+import { QUESTION_BANK } from '@/lib/questionBank';
 import {
   Users, Target, TrendingUp, AlertTriangle, Crown, Flame, Clock,
-  CheckCircle2, ChevronDown, Trophy, Activity,
+  CheckCircle2, ChevronDown, Trophy, Activity, Rocket, MapPin,
+  Zap, BookOpen, Brain, ArrowRight,
 } from 'lucide-react';
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
-  LineChart, Line, Legend,
+  LineChart, Line, Legend, ReferenceLine,
 } from 'recharts';
 
 interface StudentView {
@@ -47,7 +49,7 @@ export default function TeamDashboard() {
   const students: StudentView[] = useMemo(() => {
     return STUDENT_EMAILS.map((email) => {
       const data: UserData = profiles[email] ?? {
-        user: { name: displayName(email), email, role: 'student', targetScore: 1450, studyHoursPerDay: 1, createdAt: Date.now() },
+        user: { name: displayName(email), email, role: 'student', targetScore: 1550, studyHoursPerDay: 1, createdAt: Date.now() },
         hasDiagnostic: false,
         attempts: [],
         gamification: { xp: 0, level: 1, streak: 0, lastActiveDate: null, badges: [] },
@@ -143,7 +145,7 @@ export default function TeamDashboard() {
                   <div className="text-xs text-muted truncate">{s.email}</div>
                 </div>
                 <ProgressRing
-                  value={Math.min(100, Math.round(((s.score.total - 400) / ((s.data.user?.targetScore ?? 1450) - 400)) * 100))}
+                  value={Math.min(100, Math.round(((s.score.total - 400) / ((s.data.user?.targetScore ?? 1550) - 400)) * 100))}
                   size={64}
                   stroke={6}
                   label={<span className="text-sm">{s.score.total}</span>}
@@ -153,7 +155,7 @@ export default function TeamDashboard() {
 
               {/* Quick stats */}
               <div className="grid grid-cols-4 gap-2 mb-5 text-center">
-                <Mini label="Target gap" value={`${Math.max(0, (s.data.user?.targetScore ?? 1450) - s.score.total)}`} tone="text-warning" />
+                <Mini label="Target gap" value={`${Math.max(0, (s.data.user?.targetScore ?? 1550) - s.score.total)}`} tone="text-warning" />
                 <Mini label="Accuracy" value={`${s.accuracy}%`} tone="text-success" />
                 <Mini label="Questions" value={String(s.data.attempts.length)} tone="" />
                 <Mini label="Streak" value={`${s.data.gamification.streak}🔥`} tone="text-orange-500" />
@@ -194,6 +196,9 @@ export default function TeamDashboard() {
           </motion.div>
         ))}
       </div>
+
+      {/* ── TARGET 1550 ROADMAP ──────────────────────────────── */}
+      <Roadmap1550 students={students} />
 
       {/* Comparison chart */}
       <Card>
@@ -699,6 +704,311 @@ function Mini({ label, value, tone }: { label: string; value: string; tone: stri
     <div className="rounded-xl border border-[rgb(var(--border))] py-2">
       <div className={`font-display font-bold ${tone}`}>{value}</div>
       <div className="text-[10px] text-muted">{label}</div>
+    </div>
+  );
+}
+
+// ─── Target 1550 Roadmap ──────────────────────────────────────────────────────
+
+const TARGET = 1550;
+const TARGET_SECTION = 775; // each section out of 800
+const WEEKS_GOAL = 8;
+
+/** Points-per-week velocity over the last 14 days. */
+function scoreVelocity(attempts: Attempt[]): number {
+  const history = scoreHistory(attempts);
+  if (history.length < 2) return 0;
+  const now = history[history.length - 1];
+  const twoWeeksAgo = history.find((h) => {
+    const d = new Date(now.date).getTime() - new Date(h.date).getTime();
+    return d <= 14 * 86400000;
+  });
+  if (!twoWeeksAgo || twoWeeksAgo.date === now.date) return 0;
+  const days = Math.max(1, (new Date(now.date).getTime() - new Date(twoWeeksAgo.date).getTime()) / 86400000);
+  return Math.round(((now.score - twoWeeksAgo.score) / days) * 7);
+}
+
+/** How much mastery improvement is needed in a topic to gain `pointsNeeded` section points. */
+function masteryNeededForPoints(pointsNeeded: number, topicsInSection: number): number {
+  // section score = 200 + (avg_mastery/100)*600 → avg_mastery = (score-200)/600*100
+  // If avg mastery rises by Δ, section score rises by Δ/100*600
+  // 1 topic covers 1/n of avg mastery → improving 1 topic by M raises section by M/n/100*600
+  return Math.ceil((pointsNeeded * 100 * topicsInSection) / 600);
+}
+
+/** Subtopic accuracy from attempts joined to question bank. */
+function subtopicBreakdown(attempts: Attempt[]): { subtopic: string; topic: TopicId; acc: number; count: number }[] {
+  const qMap = new Map(QUESTION_BANK.map((q) => [q.id, q]));
+  const groups: Record<string, { correct: number; total: number; topic: TopicId }> = {};
+  for (const a of attempts) {
+    const q = qMap.get(a.questionId);
+    if (!q?.subtopic) continue;
+    const key = q.subtopic;
+    if (!groups[key]) groups[key] = { correct: 0, total: 0, topic: a.topic };
+    groups[key].total++;
+    if (a.correct) groups[key].correct++;
+  }
+  return Object.entries(groups)
+    .map(([subtopic, d]) => ({ subtopic, topic: d.topic, acc: Math.round((d.correct / d.total) * 100), count: d.total }))
+    .filter((r) => r.count >= 2)
+    .sort((a, b) => a.acc - b.acc);
+}
+
+function Roadmap1550({ students }: { students: StudentView[] }) {
+  const [open, setOpen] = useState<string | null>(null);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 text-white shadow-soft">
+          <Rocket size={20} />
+        </div>
+        <div>
+          <h2 className="font-display font-extrabold text-lg">Target 1550 Roadmap</h2>
+          <p className="text-xs text-muted">8-week plan · section gaps · concept priorities · weekly actions</p>
+        </div>
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        {students.map((s) => {
+          const gap = Math.max(0, TARGET - s.score.total);
+          const mathGap = Math.max(0, TARGET_SECTION - s.score.math);
+          const rwGap = Math.max(0, TARGET_SECTION - s.score.rw);
+          const velocity = scoreVelocity(s.data.attempts);
+          const weeksLeft = velocity > 0 ? Math.ceil(gap / velocity) : null;
+          const onTrack = weeksLeft !== null && weeksLeft <= WEEKS_GOAL;
+          const pct = Math.min(100, Math.round(((TARGET - 400 - gap) / (TARGET - 400)) * 100));
+          const isOpen = open === s.email;
+
+          // Priority topics: most mastery room × section gap weight
+          const mathTopicCount = MATH_TOPICS.length;
+          const rwTopicCount = RW_TOPICS.length;
+          const priorities = [...s.mastery]
+            .filter((m) => m.attempts > 0 || true)
+            .map((m) => {
+              const isMath = (MATH_TOPICS as string[]).includes(m.topic);
+              const sectionGap = isMath ? mathGap : rwGap;
+              const topicsInSection = isMath ? mathTopicCount : rwTopicCount;
+              const room = 100 - m.mastery;
+              const masteryNeeded = masteryNeededForPoints(sectionGap, topicsInSection);
+              const urgency = (room / 100) * Math.min(1, sectionGap / 100);
+              return { ...m, isMath, sectionGap, masteryNeeded, urgency, room };
+            })
+            .sort((a, b) => b.urgency - a.urgency)
+            .slice(0, 4);
+
+          const subtopics = subtopicBreakdown(s.data.attempts).slice(0, 6);
+
+          return (
+            <Card key={s.email} className="space-y-4">
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-brand text-white font-bold shadow-soft">
+                    {s.name[0]}
+                  </div>
+                  <div>
+                    <div className="font-display font-bold">{s.name}</div>
+                    <div className="text-xs text-muted">{s.score.total} → {TARGET} goal</div>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full ${
+                  gap === 0 ? 'bg-success/10 text-success' :
+                  onTrack ? 'bg-emerald-500/10 text-emerald-600' : 'bg-amber-500/10 text-amber-600'
+                }`}>
+                  {gap === 0 ? '🎯 Target reached!' : onTrack ? `✅ On track (${weeksLeft}w)` : velocity > 0 ? `⚡ ${weeksLeft}w at this pace` : '🔴 Need more data'}
+                </div>
+              </div>
+
+              {/* Score progress bar toward 1550 */}
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-muted">Progress to {TARGET}</span>
+                  <span className="font-semibold">{pct}% · {gap > 0 ? `${gap} pts to go` : 'Done!'}</span>
+                </div>
+                <div className="h-3 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                  <motion.div
+                    className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${pct}%` }}
+                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                  />
+                </div>
+              </div>
+
+              {/* Section gap breakdown */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-[rgb(var(--border))] p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-muted mb-1">Math</div>
+                  <div className="font-display text-xl font-extrabold">{s.score.math}</div>
+                  <div className="text-xs mt-0.5">
+                    {mathGap > 0
+                      ? <span className="text-amber-600 font-semibold">+{mathGap} needed</span>
+                      : <span className="text-success font-semibold">✓ On target</span>}
+                  </div>
+                  <MasteryBar value={Math.round((s.score.math / 800) * 100)} height={4} />
+                </div>
+                <div className="rounded-xl border border-[rgb(var(--border))] p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-muted mb-1">Reading & Writing</div>
+                  <div className="font-display text-xl font-extrabold">{s.score.rw}</div>
+                  <div className="text-xs mt-0.5">
+                    {rwGap > 0
+                      ? <span className="text-amber-600 font-semibold">+{rwGap} needed</span>
+                      : <span className="text-success font-semibold">✓ On target</span>}
+                  </div>
+                  <MasteryBar value={Math.round((s.score.rw / 800) * 100)} height={4} />
+                </div>
+              </div>
+
+              {/* Velocity */}
+              <div className="flex items-center gap-4 rounded-xl bg-slate-500/5 border border-[rgb(var(--border))] px-4 py-2.5 text-sm">
+                <div className="flex items-center gap-1.5">
+                  <Zap size={14} className={velocity > 0 ? 'text-success' : 'text-muted'} />
+                  <span className="font-semibold">{velocity > 0 ? `+${velocity}` : velocity === 0 ? '0' : velocity} pts/week</span>
+                  <span className="text-muted text-xs">(last 2 weeks)</span>
+                </div>
+                {velocity > 0 && gap > 0 && (
+                  <div className="text-xs text-muted">
+                    Need <b>{Math.ceil(gap / WEEKS_GOAL)}</b> pts/week for 8-week target
+                  </div>
+                )}
+              </div>
+
+              {/* Priority topics */}
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-muted mb-2 flex items-center gap-1.5">
+                  <MapPin size={12} /> Priority topics (by score impact)
+                </div>
+                <div className="space-y-2">
+                  {priorities.map((p, rank) => (
+                    <div key={p.topic} className="flex items-center gap-3">
+                      <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                        rank === 0 ? 'bg-red-500 text-white' : rank === 1 ? 'bg-amber-500 text-white' : 'bg-slate-400 text-white'
+                      }`}>{rank + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between text-xs mb-0.5">
+                          <span className="font-medium truncate">{TOPIC_MAP[p.topic].name}</span>
+                          <span className="shrink-0 ml-2 text-muted">{p.isMath ? 'Math' : 'RW'} · {p.mastery}%</span>
+                        </div>
+                        <MasteryBar value={p.mastery} height={5} />
+                      </div>
+                      <span className="text-[10px] text-muted shrink-0 w-16 text-right">
+                        +{Math.round(p.room / 100 * (600 / (p.isMath ? mathTopicCount : rwTopicCount)))} pts max
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Weekly action plan */}
+              <div className="rounded-xl border border-brand-500/20 bg-brand-500/5 p-3 space-y-1.5">
+                <div className="text-xs font-bold text-brand-600 dark:text-brand-300 flex items-center gap-1.5 mb-2">
+                  <Brain size={13} /> This week's focus plan
+                </div>
+                <ActionPlan s={s} priorities={priorities} mathGap={mathGap} rwGap={rwGap} velocity={velocity} />
+              </div>
+
+              {/* Expandable subtopic drill-down */}
+              <button
+                onClick={() => setOpen(isOpen ? null : s.email)}
+                className="btn-ghost w-full py-2 text-xs flex items-center justify-center gap-1.5"
+              >
+                <BookOpen size={13} />
+                {isOpen ? 'Hide subtopic drill-down' : 'Show subtopic drill-down'}
+                <ChevronDown size={13} className={isOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+              </button>
+
+              {isOpen && (
+                <SubtopicDrilldown subtopics={subtopics} attempts={s.data.attempts} />
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ActionPlan({ s, priorities, mathGap, rwGap, velocity }: {
+  s: StudentView;
+  priorities: Array<{ topic: TopicId; mastery: number; isMath: boolean; room: number }>;
+  mathGap: number; rwGap: number; velocity: number;
+}) {
+  const focusTopic = priorities[0];
+  const secondTopic = priorities[1];
+  const needsAcceleration = velocity >= 0 && velocity < Math.ceil((mathGap + rwGap) / WEEKS_GOAL);
+  const biggerGapSection = mathGap >= rwGap ? 'Math' : 'Reading & Writing';
+
+  const actions: string[] = [];
+
+  if (focusTopic) {
+    actions.push(`3 sessions on ${TOPIC_MAP[focusTopic.topic].name} — currently ${focusTopic.mastery}%, needs 80%+ for target`);
+  }
+  if (secondTopic) {
+    actions.push(`1 session on ${TOPIC_MAP[secondTopic.topic].name} — ${secondTopic.mastery}% mastery`);
+  }
+  if (mathGap > rwGap + 30) {
+    actions.push('Prioritise Math: gap is larger — focus on hard-difficulty drills');
+  } else if (rwGap > mathGap + 30) {
+    actions.push('Prioritise Reading & Writing: vocabulary-in-context and grammar drills');
+  } else {
+    actions.push(`${biggerGapSection} needs more work — aim for 1 extra session`);
+  }
+  if (needsAcceleration) {
+    actions.push(`Current pace (${velocity > 0 ? `+${velocity}` : '0'} pts/week) is below target — increase to daily 30-min sessions`);
+  }
+  if (s.data.attempts.length < 20) {
+    actions.push('Complete the 3 Benchmark Evaluations first to unlock personalised recommendations');
+  }
+
+  return (
+    <ul className="space-y-1">
+      {actions.slice(0, 4).map((a, i) => (
+        <li key={i} className="flex items-start gap-2 text-xs">
+          <ArrowRight size={11} className="text-brand-500 mt-0.5 shrink-0" />
+          <span>{a}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SubtopicDrilldown({ subtopics, attempts }: {
+  subtopics: ReturnType<typeof subtopicBreakdown>;
+  attempts: Attempt[];
+}) {
+  if (!subtopics.length) {
+    return <p className="text-xs text-muted pb-2">No subtopic data yet — complete more questions from the question bank to unlock this view.</p>;
+  }
+
+  const byTopic = subtopics.reduce<Record<string, typeof subtopics>>((acc, s) => {
+    (acc[s.topic] ??= []).push(s);
+    return acc;
+  }, {});
+
+  return (
+    <div className="space-y-3 pb-1">
+      <div className="text-xs font-bold uppercase tracking-wide text-muted">Subtopic accuracy (weakest first)</div>
+      {Object.entries(byTopic).map(([topic, rows]) => (
+        <div key={topic}>
+          <div className="text-xs font-semibold mb-1.5 text-muted">{TOPIC_MAP[topic as TopicId]?.name ?? topic}</div>
+          <div className="space-y-1.5">
+            {rows.map((r) => (
+              <div key={r.subtopic} className="flex items-center gap-3">
+                <span className="text-xs w-48 truncate">{r.subtopic}</span>
+                <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${r.acc}%`, background: masteryColor(r.acc) }}
+                  />
+                </div>
+                <span className="text-xs font-semibold w-10 text-right" style={{ color: masteryColor(r.acc) }}>{r.acc}%</span>
+                <span className="text-[10px] text-muted w-8 text-right">{r.count}q</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
