@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Question } from '@/lib/types';
 import { useStore } from '@/lib/store';
@@ -7,10 +7,9 @@ import { cn, formatTime } from '@/lib/utils';
 import { TOPIC_MAP } from '@/lib/topics';
 import { Timer, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react';
 
-// Digital SAT section time limits (seconds)
-const RW_SECS = 64 * 60;   // 64 min total for Reading & Writing
-const MATH_SECS = 70 * 60; // 70 min total for Math
-const BREAK_SECS = 5 * 60; // 5-min optional break
+const RW_SECS = 64 * 60;
+const MATH_SECS = 70 * 60;
+const BREAK_SECS = 5 * 60;
 
 type Phase = 'intro' | 'rw' | 'break' | 'math' | 'review';
 type ChoiceId = 'A' | 'B' | 'C' | 'D';
@@ -21,83 +20,205 @@ function estimateSection(correct: number, total: number): number {
   return Math.round(200 + (correct / total) * 600);
 }
 
-interface Props { questions: Question[] }
+function newSessionId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `mock-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
-export default function MockRunner({ questions }: Props) {
+export interface StoredSession {
+  id: string;
+  phase: string;
+  rw_idx: number;
+  math_idx: number;
+  answers_json: string;
+  rw_started_at: number | null;
+  math_started_at: number | null;
+  started_at: number;
+  rw_correct: number;
+  rw_total: number;
+  math_correct: number;
+  math_total: number;
+}
+
+interface Props {
+  questions: Question[];
+  email?: string;
+  date?: string;
+  /** Pass an existing in-progress session to resume it */
+  session?: StoredSession | null;
+}
+
+export default function MockRunner({ questions, email, date, session }: Props) {
   const { recordAttempt, finishSession } = useStore();
 
   const rwQs = questions.filter((q) => q.section === 'Reading & Writing');
   const mathQs = questions.filter((q) => q.section === 'Math');
 
-  const [phase, setPhase] = useState<Phase>('intro');
-  const [rwIdx, setRwIdx] = useState(0);
-  const [mathIdx, setMathIdx] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, AnswerRecord>>({});
+  // Session persistence refs (stable across renders)
+  const sessionIdRef = useRef<string>(session?.id ?? newSessionId());
+  const startedAtRef = useRef<number>(session?.started_at ?? Date.now());
+  const rwStartedRef = useRef<number | null>(session?.rw_started_at ?? null);
+  const mathStartedRef = useRef<number | null>(session?.math_started_at ?? null);
+  const savingRef = useRef(false);
+
+  // Restore state from session if resuming
+  const initPhase = (session?.phase ?? 'intro') as Phase;
+  const initAnswers: Record<string, AnswerRecord> = (() => {
+    try { return session ? JSON.parse(session.answers_json) : {}; } catch { return {}; }
+  })();
+
+  const [phase, setPhase] = useState<Phase>(initPhase === 'review' ? 'review' : initPhase === 'intro' ? 'intro' : initPhase as Phase);
+  const [rwIdx, setRwIdx] = useState(session?.rw_idx ?? 0);
+  const [mathIdx, setMathIdx] = useState(session?.math_idx ?? 0);
+  const [answers, setAnswers] = useState<Record<string, AnswerRecord>>(initAnswers);
   const [pending, setPending] = useState<ChoiceId | null>(null);
   const [timer, setTimer] = useState<number | null>(null);
   const [qStart, setQStart] = useState(Date.now());
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // Initialize section timer when phase changes
-  useEffect(() => {
-    if (phase === 'rw') { setTimer(RW_SECS); setQStart(Date.now()); }
-    else if (phase === 'math') { setTimer(MATH_SECS); setQStart(Date.now()); }
-    else if (phase === 'break') setTimer(BREAK_SECS);
-    else setTimer(null);
-  }, [phase]);
+  // ── Persist session to DB ──────────────────────────────────────────────────
+  const saveSession = useCallback(async (updates: Partial<{
+    status: string; phase: string; answers_json: string;
+    rw_idx: number; math_idx: number;
+    rw_started_at: number; math_started_at: number; started_at: number;
+    rw_correct: number; rw_total: number;
+    math_correct: number; math_total: number;
+    completed_at: number;
+  }>) => {
+    if (!email || !date || savingRef.current) return;
+    savingRef.current = true;
+    try {
+      await fetch('/api/mock-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: sessionIdRef.current,
+          user_email: email,
+          date,
+          started_at: startedAtRef.current,
+          rw_started_at: rwStartedRef.current,
+          math_started_at: mathStartedRef.current,
+          questions_json: JSON.stringify(questions),
+          answers_json: JSON.stringify(answers),
+          phase,
+          rw_idx: rwIdx,
+          math_idx: mathIdx,
+          rw_correct: 0, rw_total: rwQs.length,
+          math_correct: 0, math_total: mathQs.length,
+          ...updates,
+        }),
+      });
+    } catch (e) {
+      console.warn('[MockRunner] save failed', e);
+    } finally {
+      savingRef.current = false;
+    }
+  }, [email, date, questions, answers, phase, rwIdx, mathIdx, rwQs.length, mathQs.length]);
 
-  // Tick timer down 1s at a time
+  // ── Section timer initialization ───────────────────────────────────────────
+  useEffect(() => {
+    if (phase === 'rw') {
+      if (!rwStartedRef.current) rwStartedRef.current = Date.now();
+      const elapsed = (Date.now() - rwStartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, RW_SECS - elapsed)));
+      setQStart(Date.now());
+    } else if (phase === 'math') {
+      if (!mathStartedRef.current) {
+        mathStartedRef.current = Date.now();
+        void saveSession({ phase: 'math', math_started_at: mathStartedRef.current });
+      }
+      const elapsed = (Date.now() - mathStartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, MATH_SECS - elapsed)));
+      setQStart(Date.now());
+    } else if (phase === 'break') {
+      setTimer(BREAK_SECS);
+    } else {
+      setTimer(null);
+    }
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Timer tick ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (timer === null || timer <= 0) return;
     const t = setTimeout(() => setTimer((p) => (p !== null ? p - 1 : null)), 1000);
     return () => clearTimeout(t);
   }, [timer]);
 
-  // Handle timer expiry
+  // ── Timer expiry ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (timer !== 0) return;
     if (phase === 'rw') {
       rwQs.forEach((q) => {
-        if (!answers[q.id])
-          recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
+        if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
       });
       setPhase('break');
     } else if (phase === 'break') {
       setPhase('math');
     } else if (phase === 'math') {
       mathQs.forEach((q) => {
-        if (!answers[q.id])
-          recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
+        if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
       });
+      const newAnswers = { ...answers };
+      const rwC = rwQs.filter((q) => newAnswers[q.id]?.selected === q.correct).length;
+      const mathC = mathQs.filter((q) => newAnswers[q.id]?.selected === q.correct).length;
       finishSession('mock', 0);
+      void saveSession({
+        status: 'complete', phase: 'review', answers_json: JSON.stringify(newAnswers),
+        rw_correct: rwC, rw_total: rwQs.length,
+        math_correct: mathC, math_total: mathQs.length, completed_at: Date.now(),
+      });
       setPhase('review');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timer]);
+  }, [timer]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const recordAnswer = useCallback(
-    (q: Question, selected: ChoiceId | null) => {
-      const timeSec = (Date.now() - qStart) / 1000;
-      setAnswers((prev) => ({ ...prev, [q.id]: { selected, timeSec } }));
-      recordAttempt({ question: q, selected, timeSec, confidence: 'medium', mode: 'mock' });
-      setQStart(Date.now());
-    },
-    [qStart, recordAttempt]
-  );
-
+  // ── Answer & advance ───────────────────────────────────────────────────────
   const advance = useCallback(() => {
     const q = phase === 'rw' ? rwQs[rwIdx] : phase === 'math' ? mathQs[mathIdx] : null;
     if (!q) return;
-    recordAnswer(q, pending);
+
+    const timeSec = (Date.now() - qStart) / 1000;
+    const newAnswers = { ...answers, [q.id]: { selected: pending, timeSec } };
+    setAnswers(newAnswers);
+    recordAttempt({ question: q, selected: pending, timeSec, confidence: 'medium', mode: 'mock' });
     setPending(null);
+    setQStart(Date.now());
+
     if (phase === 'rw') {
-      if (rwIdx + 1 >= rwQs.length) setPhase('break');
-      else setRwIdx((i) => i + 1);
+      const nextIdx = rwIdx + 1;
+      if (nextIdx >= rwQs.length) {
+        const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        void saveSession({
+          answers_json: JSON.stringify(newAnswers), phase: 'break', rw_idx: nextIdx,
+          rw_correct: rwC, rw_total: rwQs.length,
+        });
+        setPhase('break');
+      } else {
+        setRwIdx(nextIdx);
+        if (nextIdx % 5 === 0) {
+          void saveSession({ answers_json: JSON.stringify(newAnswers), rw_idx: nextIdx });
+        }
+      }
     } else if (phase === 'math') {
-      if (mathIdx + 1 >= mathQs.length) { finishSession('mock', 0); setPhase('review'); }
-      else setMathIdx((i) => i + 1);
+      const nextIdx = mathIdx + 1;
+      if (nextIdx >= mathQs.length) {
+        const mathC = mathQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        finishSession('mock', 0);
+        void saveSession({
+          answers_json: JSON.stringify(newAnswers), status: 'complete', phase: 'review',
+          math_idx: nextIdx, math_correct: mathC, math_total: mathQs.length,
+          rw_correct: rwC, rw_total: rwQs.length, completed_at: Date.now(),
+        });
+        setPhase('review');
+      } else {
+        setMathIdx(nextIdx);
+        if (nextIdx % 5 === 0) {
+          void saveSession({ answers_json: JSON.stringify(newAnswers), math_idx: nextIdx });
+        }
+      }
     }
-  }, [phase, rwIdx, mathIdx, rwQs, mathQs, pending, recordAnswer, finishSession]);
+  }, [phase, rwIdx, mathIdx, rwQs, mathQs, pending, answers, qStart, recordAttempt, finishSession, saveSession]);
 
   // ── INTRO ──────────────────────────────────────────────────────────────────
   if (phase === 'intro') {
@@ -133,7 +254,7 @@ export default function MockRunner({ questions }: Props) {
                 ['⏱', 'Each section is timed — manage your time carefully'],
                 ['🚫', 'No feedback during the exam — just like the real SAT'],
                 ['📝', 'Full per-question analysis revealed at the end'],
-                ['🎯', 'Treat every question as if it counts on test day'],
+                ['🔒', 'Progress is saved — you can resume if interrupted'],
               ] as [string, string][]).map(([icon, text]) => (
                 <div key={text} className="flex items-center gap-3 rounded-xl bg-white/8 px-4 py-2.5">
                   <span>{icon}</span><span className="text-white/80">{text}</span>
@@ -142,7 +263,13 @@ export default function MockRunner({ questions }: Props) {
             </div>
             <button
               className="w-full rounded-2xl bg-gradient-to-r from-brand-500 to-accent-500 py-4 font-bold text-white text-base shadow-glow hover:opacity-90 transition-opacity"
-              onClick={() => setPhase('rw')}
+              onClick={() => {
+                const now = Date.now();
+                startedAtRef.current = now;
+                rwStartedRef.current = now;
+                void saveSession({ status: 'in-progress', phase: 'rw', rw_started_at: now, started_at: now });
+                setPhase('rw');
+              }}
             >
               I'm Ready — Begin Exam →
             </button>
@@ -163,11 +290,7 @@ export default function MockRunner({ questions }: Props) {
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <div className="text-6xl mb-4">✅</div>
           <h2 className="font-display text-2xl font-bold">Reading & Writing — Done!</h2>
-          <p className="text-muted mt-1 text-sm">{rwQs.length} questions answered</p>
-          <div className="mt-5 inline-block rounded-2xl bg-brand-500/10 border border-brand-500/20 px-8 py-5">
-            <div className="font-display text-3xl font-extrabold text-brand-600">{rwCorrect} / {rwQs.length}</div>
-            <div className="text-xs text-muted mt-1">correct (revealed at end)</div>
-          </div>
+          <p className="text-muted mt-1 text-sm">{rwQs.length} questions answered · {rwCorrect} correct</p>
           {timer !== null && timer > 0 && (
             <p className="mt-4 text-sm text-muted">
               Optional break: <span className="font-bold tabular-nums">{formatTime(timer)}</span> remaining
@@ -183,138 +306,7 @@ export default function MockRunner({ questions }: Props) {
 
   // ── REVIEW ─────────────────────────────────────────────────────────────────
   if (phase === 'review') {
-    const rwCorrect = rwQs.filter((q) => answers[q.id]?.selected === q.correct).length;
-    const mathCorrect = mathQs.filter((q) => answers[q.id]?.selected === q.correct).length;
-    const rwScore = estimateSection(rwCorrect, rwQs.length);
-    const mathScore = estimateSection(mathCorrect, mathQs.length);
-    const total = rwScore + mathScore;
-    const totalQ = rwQs.length + mathQs.length;
-    const totalCorrect = rwCorrect + mathCorrect;
-
-    return (
-      <div className="space-y-6 mx-auto max-w-3xl pb-12">
-        {/* Score header */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-accent-600 p-8 text-white text-center shadow-glow-lg">
-            <div className="text-5xl mb-3">🎓</div>
-            <h2 className="font-display text-3xl font-extrabold">Mock Test Complete!</h2>
-            <p className="text-white/60 text-sm mt-1">{totalCorrect} of {totalQ} questions correct</p>
-            <div className="mt-6 flex items-center justify-center gap-6 sm:gap-12">
-              <SectionScore label="Reading & Writing" score={rwScore} correct={rwCorrect} total={rwQs.length} />
-              <div className="text-center">
-                <div className="font-display text-5xl sm:text-6xl font-extrabold">{total}</div>
-                <div className="text-white/60 text-xs mt-1">Estimated SAT Score</div>
-                <div className={`mt-2 inline-block text-xs font-bold px-3 py-1 rounded-full ${total >= 1550 ? 'bg-green-400/30' : total >= 1400 ? 'bg-yellow-400/30' : 'bg-red-400/30'}`}>
-                  {total >= 1550 ? '🎯 Target reached!' : total >= 1400 ? '🟢 On track for 1550' : total >= 1200 ? '🟡 Keep improving' : '🔴 More practice needed'}
-                </div>
-              </div>
-              <SectionScore label="Math" score={mathScore} correct={mathCorrect} total={mathQs.length} />
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Per-question review by section */}
-        {(['Reading & Writing', 'Math'] as const).map((sec) => {
-          const sqs = sec === 'Reading & Writing' ? rwQs : mathQs;
-          if (!sqs.length) return null;
-          const sc = sqs.filter((q) => answers[q.id]?.selected === q.correct).length;
-          return (
-            <div key={sec}>
-              <div className="flex items-center gap-3 mb-3">
-                <h3 className="font-display font-bold text-lg">{sec}</h3>
-                <Pill tone={sc / sqs.length >= 0.7 ? 'success' : sc / sqs.length >= 0.5 ? 'warning' : 'danger'}>
-                  {sc}/{sqs.length} correct
-                </Pill>
-              </div>
-              <div className="space-y-2">
-                {sqs.map((q, i) => {
-                  const ans = answers[q.id];
-                  const correct = ans?.selected === q.correct;
-                  const isExp = expandedId === q.id;
-                  const exp = (typeof q.explanation === 'object' ? q.explanation : {}) as Record<string, string>;
-                  return (
-                    <motion.div
-                      key={q.id}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.015 }}
-                      className={cn('rounded-2xl border overflow-hidden', correct ? 'border-success/30 bg-success/5' : 'border-danger/30 bg-danger/5')}
-                    >
-                      <button className="w-full flex items-center gap-3 p-3.5 text-left" onClick={() => setExpandedId(isExp ? null : q.id)}>
-                        <span className={cn('grid h-6 w-6 place-items-center rounded-md text-xs font-bold shrink-0', correct ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger')}>
-                          {correct ? '✓' : '✗'}
-                        </span>
-                        <span className="text-xs text-muted font-bold shrink-0 w-6">Q{i + 1}</span>
-                        <span className="flex-1 text-sm truncate">{q.prompt.slice(0, 90)}{q.prompt.length > 90 ? '…' : ''}</span>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className={cn('text-xs font-bold', correct ? 'text-success' : 'text-danger')}>
-                            {ans?.selected ?? '—'}{!correct && ans?.selected ? ` → ${q.correct}` : ''}
-                          </span>
-                          <Pill tone="muted" className="hidden sm:inline-flex text-[10px]">{q.difficulty}</Pill>
-                          {ans?.timeSec ? <span className="text-xs text-muted tabular-nums">{Math.round(ans.timeSec)}s</span> : null}
-                          {isExp ? <ChevronUp size={14} className="text-muted" /> : <ChevronDown size={14} className="text-muted" />}
-                        </div>
-                      </button>
-                      <AnimatePresence>
-                        {isExp && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: 'auto', opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.22 }}
-                            className="overflow-hidden"
-                          >
-                            <div className="border-t border-[rgb(var(--border))] px-4 py-4 space-y-3 text-sm">
-                              {q.passage && (
-                                <div className="rounded-xl bg-brand-500/5 border-l-4 border-brand-400 p-3 text-sm leading-relaxed">{q.passage}</div>
-                              )}
-                              <p className="font-medium leading-relaxed">{q.prompt}</p>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                {q.choices.map((c) => (
-                                  <div key={c.id} className={cn('rounded-xl p-3 text-xs border flex gap-2',
-                                    c.id === q.correct ? 'border-success/40 bg-success/10 font-semibold' :
-                                    c.id === ans?.selected && !correct ? 'border-danger/40 bg-danger/10' :
-                                    'border-[rgb(var(--border))]'
-                                  )}>
-                                    <span className="font-bold shrink-0">{c.id}.</span><span>{c.text}</span>
-                                  </div>
-                                ))}
-                              </div>
-                              {exp.correctWhy && (
-                                <div className="rounded-xl bg-success/5 border border-success/20 p-3">
-                                  <div className="text-xs font-bold text-success mb-1">✓ Why the correct answer wins</div>
-                                  <p className="text-muted leading-relaxed">{exp.correctWhy}</p>
-                                </div>
-                              )}
-                              {!correct && exp.trapNote && (
-                                <div className="rounded-xl bg-warning/5 border border-warning/20 p-3">
-                                  <div className="text-xs font-bold text-warning mb-1">⚠ Trap to watch for</div>
-                                  <p className="text-muted leading-relaxed">{exp.trapNote}</p>
-                                </div>
-                              )}
-                              {exp.fastStrategy && (
-                                <div className="rounded-xl bg-brand-500/5 border border-brand-500/20 p-3">
-                                  <div className="text-xs font-bold text-brand-600 mb-1">⚡ Fast strategy</div>
-                                  <p className="text-muted leading-relaxed">{exp.fastStrategy}</p>
-                                </div>
-                              )}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-
-        <div className="text-center pt-4">
-          <a href="/app/mock" className="btn-primary px-8 py-3 inline-flex">Back to Mock Hub <ArrowRight size={15} /></a>
-        </div>
-      </div>
-    );
+    return <MockReview rwQs={rwQs} mathQs={mathQs} answers={answers} expandedId={expandedId} setExpandedId={setExpandedId} />;
   }
 
   // ── ACTIVE TEST ─────────────────────────────────────────────────────────────
@@ -330,7 +322,6 @@ export default function MockRunner({ questions }: Props) {
 
   return (
     <div className="mx-auto max-w-3xl">
-      {/* Header: section label, progress, timer */}
       <div className="mb-5 flex items-center gap-4">
         <div className="flex-1">
           <div className="flex items-center justify-between text-xs text-muted mb-2">
@@ -418,15 +409,160 @@ export default function MockRunner({ questions }: Props) {
         </motion.div>
       </AnimatePresence>
 
-      {/* Dot navigator */}
       <div className="flex flex-wrap gap-1 mt-3 justify-center">
         {sectionQs.map((sq, i) => (
           <div key={sq.id} className={cn('h-1.5 rounded-full transition-all',
-            i < idx ? 'bg-brand-400 w-3' :
-            i === idx ? 'bg-brand-500 w-4' :
-            'bg-slate-300 dark:bg-slate-700 w-1.5'
+            i < idx ? 'bg-brand-400 w-3' : i === idx ? 'bg-brand-500 w-4' : 'bg-slate-300 dark:bg-slate-700 w-1.5'
           )} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Shared review component (used by MockRunner and MockHistory) ──────────────
+export function MockReview({
+  rwQs, mathQs, answers, expandedId, setExpandedId,
+}: {
+  rwQs: Question[];
+  mathQs: Question[];
+  answers: Record<string, AnswerRecord>;
+  expandedId: string | null;
+  setExpandedId: (id: string | null) => void;
+}) {
+  const rwCorrect = rwQs.filter((q) => answers[q.id]?.selected === q.correct).length;
+  const mathCorrect = mathQs.filter((q) => answers[q.id]?.selected === q.correct).length;
+  const rwScore = estimateSection(rwCorrect, rwQs.length);
+  const mathScore = estimateSection(mathCorrect, mathQs.length);
+  const total = rwScore + mathScore;
+  const totalCorrect = rwCorrect + mathCorrect;
+  const totalQ = rwQs.length + mathQs.length;
+
+  return (
+    <div className="space-y-6 mx-auto max-w-3xl pb-12">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+        <div className="rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-accent-600 p-8 text-white text-center shadow-glow-lg">
+          <div className="text-5xl mb-3">🎓</div>
+          <h2 className="font-display text-3xl font-extrabold">Mock Test Complete!</h2>
+          <p className="text-white/60 text-sm mt-1">{totalCorrect} of {totalQ} correct</p>
+          <div className="mt-6 flex items-center justify-center gap-6 sm:gap-12">
+            <SectionScore label="Reading & Writing" score={rwScore} correct={rwCorrect} total={rwQs.length} />
+            <div className="text-center">
+              <div className="font-display text-5xl sm:text-6xl font-extrabold">{total}</div>
+              <div className="text-white/60 text-xs mt-1">Estimated SAT Score</div>
+              <div className={`mt-2 inline-block text-xs font-bold px-3 py-1 rounded-full ${total >= 1550 ? 'bg-green-400/30' : total >= 1400 ? 'bg-yellow-400/30' : 'bg-red-400/30'}`}>
+                {total >= 1550 ? '🎯 Target reached!' : total >= 1400 ? '🟢 On track for 1550' : total >= 1200 ? '🟡 Keep improving' : '🔴 More practice needed'}
+              </div>
+            </div>
+            <SectionScore label="Math" score={mathScore} correct={mathCorrect} total={mathQs.length} />
+          </div>
+        </div>
+      </motion.div>
+
+      {(['Reading & Writing', 'Math'] as const).map((sec) => {
+        const sqs = sec === 'Reading & Writing' ? rwQs : mathQs;
+        if (!sqs.length) return null;
+        const sc = sqs.filter((q) => answers[q.id]?.selected === q.correct).length;
+        return (
+          <div key={sec}>
+            <div className="flex items-center gap-3 mb-3">
+              <h3 className="font-display font-bold text-lg">{sec}</h3>
+              <Pill tone={sc / sqs.length >= 0.7 ? 'success' : sc / sqs.length >= 0.5 ? 'warning' : 'danger'}>
+                {sc}/{sqs.length} correct
+              </Pill>
+            </div>
+            <div className="space-y-2">
+              {sqs.map((q, i) => {
+                const ans = answers[q.id];
+                const correct = ans?.selected === q.correct;
+                const isExp = expandedId === q.id;
+                const exp = (typeof q.explanation === 'object' ? q.explanation : {}) as Record<string, string>;
+                return (
+                  <motion.div
+                    key={q.id}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.012 }}
+                    className={cn('rounded-2xl border overflow-hidden', correct ? 'border-success/30 bg-success/5' : 'border-danger/30 bg-danger/5')}
+                  >
+                    <button className="w-full flex items-center gap-3 p-3.5 text-left" onClick={() => setExpandedId(isExp ? null : q.id)}>
+                      <span className={cn('grid h-6 w-6 place-items-center rounded-md text-xs font-bold shrink-0', correct ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger')}>
+                        {correct ? '✓' : '✗'}
+                      </span>
+                      <span className="text-xs text-muted font-bold shrink-0 w-6">Q{i + 1}</span>
+                      <span className="flex-1 text-sm truncate">{q.prompt.slice(0, 90)}{q.prompt.length > 90 ? '…' : ''}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={cn('text-xs font-bold', correct ? 'text-success' : 'text-danger')}>
+                          {ans?.selected ?? '—'}{!correct && ans?.selected ? ` → ${q.correct}` : ''}
+                        </span>
+                        <Pill tone="muted" className="hidden sm:inline-flex text-[10px]">{q.difficulty}</Pill>
+                        {ans?.timeSec ? <span className="text-xs text-muted tabular-nums">{Math.round(ans.timeSec)}s</span> : null}
+                        {isExp ? <ChevronUp size={14} className="text-muted" /> : <ChevronDown size={14} className="text-muted" />}
+                      </div>
+                    </button>
+                    <AnimatePresence>
+                      {isExp && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.22 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="border-t border-[rgb(var(--border))] px-4 py-4 space-y-3 text-sm">
+                            {q.passage && (
+                              <div className="rounded-xl bg-brand-500/5 border-l-4 border-brand-400 p-3 text-sm leading-relaxed">{q.passage}</div>
+                            )}
+                            <p className="font-medium leading-relaxed">{q.prompt}</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {q.choices.map((c) => (
+                                <div key={c.id} className={cn('rounded-xl p-3 text-xs border flex gap-2',
+                                  c.id === q.correct ? 'border-success/40 bg-success/10 font-semibold' :
+                                  c.id === ans?.selected && !correct ? 'border-danger/40 bg-danger/10' :
+                                  'border-[rgb(var(--border))]'
+                                )}>
+                                  <span className="font-bold shrink-0">{c.id}.</span><span>{c.text}</span>
+                                </div>
+                              ))}
+                            </div>
+                            {exp.correctWhy && (
+                              <div className="rounded-xl bg-success/5 border border-success/20 p-3">
+                                <div className="text-xs font-bold text-success mb-1">✓ Why the correct answer wins</div>
+                                <p className="text-muted leading-relaxed">{exp.correctWhy}</p>
+                              </div>
+                            )}
+                            {!correct && exp.trapNote && (
+                              <div className="rounded-xl bg-warning/5 border border-warning/20 p-3">
+                                <div className="text-xs font-bold text-warning mb-1">⚠ Trap to watch for</div>
+                                <p className="text-muted leading-relaxed">{exp.trapNote}</p>
+                              </div>
+                            )}
+                            {exp.fastStrategy && (
+                              <div className="rounded-xl bg-brand-500/5 border border-brand-500/20 p-3">
+                                <div className="text-xs font-bold text-brand-600 mb-1">⚡ Fast strategy</div>
+                                <p className="text-muted leading-relaxed">{exp.fastStrategy}</p>
+                              </div>
+                            )}
+                            {exp.simplerView && (
+                              <div className="rounded-xl bg-accent-500/5 border border-accent-500/20 p-3">
+                                <div className="text-xs font-bold text-accent-600 mb-1">💡 Simpler way to see it</div>
+                                <p className="text-muted leading-relaxed">{exp.simplerView}</p>
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="text-center pt-4">
+        <a href="/app/mock" className="btn-primary px-8 py-3 inline-flex">Back to Mock Hub <ArrowRight size={15} /></a>
+        <a href="/app/mock-history" className="ml-3 btn-ghost px-6 py-3 inline-flex">View All History</a>
       </div>
     </div>
   );

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '@/lib/store';
 import MockRunner from '@/components/MockRunner';
+import type { StoredSession } from '@/components/MockRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
-import { FileText, Clock, Target, Play, Rocket, BookOpen, Calculator } from 'lucide-react';
+import { FileText, Clock, Target, Play, Rocket, BookOpen, Calculator, CheckCircle, RotateCcw, History } from 'lucide-react';
 import { benchmarkBaseline } from '@/lib/evaluation';
 import { selectMockQuestions } from '@/lib/adaptive';
 import type { Question, MockSettings } from '@/lib/types';
@@ -12,23 +13,52 @@ const RW_COUNT = 54;
 const MATH_COUNT = 44;
 const TOTAL_MOCK = RW_COUNT + MATH_COUNT;
 const DEFAULT_SETTINGS: MockSettings = { difficultyFilter: {}, globalDifficulty: ['easy', 'medium', 'hard'] };
+const API = import.meta.env.VITE_API_BASE ?? '';
+
+type SessionState = 'checking' | 'none' | 'resume' | 'complete';
 
 export default function MockTest() {
   const { attempts, user, mockSettings } = useStore();
   const remoteEnabled = useStore((s) => s.remoteEnabled);
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
+  const [storedSession, setStoredSession] = useState<StoredSession | null>(null);
+  const [sessionState, setSessionState] = useState<SessionState>('checking');
   const [error, setError] = useState('');
   const [storedRag, setStoredRag] = useState<Question[]>([]);
   const generatingRef = useRef(false);
+  const today = new Date().toISOString().slice(0, 10);
 
+  // Load today's RAG pool + check if session exists today
   useEffect(() => {
-    if (!remoteEnabled) return;
+    if (!remoteEnabled) { setSessionState('none'); return; }
     fetchRagQuestions().then(setStoredRag).catch(() => {});
   }, [remoteEnabled]);
 
-  const start = () => {
-    setError('');
+  useEffect(() => {
+    if (!remoteEnabled || !user?.email) { setSessionState('none'); return; }
+    fetch(`${API}/api/mock-sessions?email=${encodeURIComponent(user.email)}&date=${today}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const session = d.session as (StoredSession & { status: string; date: string; questions_json: string }) | null;
+        if (!session) { setSessionState('none'); return; }
+        if (session.status === 'complete') {
+          setSessionState('complete');
+        } else {
+          // Resume: load stored questions
+          const qs: Question[] = JSON.parse(session.questions_json || '[]');
+          setStoredRag((prev) => {
+            const ex = new Set(prev.map((q) => q.id));
+            return [...prev, ...qs.filter((q) => !ex.has(q.id))];
+          });
+          setStoredSession(session);
+          setSessionState('resume');
+        }
+      })
+      .catch(() => setSessionState('none'));
+  }, [remoteEnabled, user?.email, today]);
+
+  const buildQuestions = (): Question[] | null => {
     const seenIds = new Set(attempts.map((a) => a.questionId));
     const settings = mockSettings ?? DEFAULT_SETTINGS;
 
@@ -45,31 +75,115 @@ export default function MockTest() {
 
     const finalRW = merge(ragRW, staticRW, RW_COUNT);
     const finalMath = merge(ragMath, staticMath, MATH_COUNT);
-    if (!finalRW.length && !finalMath.length) {
-      setError('No questions available — check your question bank.');
-      return;
-    }
-    setQuestions([...finalRW, ...finalMath]);
-
-    if (remoteEnabled && user?.email && !generatingRef.current) {
-      generatingRef.current = true;
-      void createNovelTestSession({
-        email: user.email, mode: 'mock', count: TOTAL_MOCK,
-        attempts, fallbackQuestions: [...staticRW, ...staticMath],
-      })
-        .then((newQs) => setStoredRag((prev) => {
-          const ex = new Set(prev.map((q) => q.id));
-          return [...prev, ...newQs.filter((q) => !ex.has(q.id))];
-        }))
-        .catch(() => {})
-        .finally(() => { generatingRef.current = false; });
-    }
+    if (!finalRW.length && !finalMath.length) return null;
+    return [...finalRW, ...finalMath];
   };
 
-  if (questions) return <MockRunner questions={questions} />;
+  const launchBackground = (qs: Question[]) => {
+    if (!remoteEnabled || !user?.email || generatingRef.current) return;
+    generatingRef.current = true;
+    const settings = mockSettings ?? DEFAULT_SETTINGS;
+    const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, settings, storedRag);
+    void createNovelTestSession({
+      email: user.email, mode: 'mock', count: TOTAL_MOCK,
+      attempts, fallbackQuestions: staticAll,
+    })
+      .then((newQs) => setStoredRag((prev) => {
+        const ex = new Set(prev.map((q) => q.id));
+        return [...prev, ...newQs.filter((q) => !ex.has(q.id))];
+      }))
+      .catch(() => {})
+      .finally(() => { generatingRef.current = false; });
+    void qs; // suppress lint warning
+  };
+
+  const start = () => {
+    setError('');
+    const qs = buildQuestions();
+    if (!qs) { setError('No questions available — check your question bank.'); return; }
+    launchBackground(qs);
+    setQuestions(qs);
+  };
+
+  const resume = () => {
+    setError('');
+    // storedSession already loaded with questions from DB
+    if (!storedSession) { start(); return; }
+    const seenIds = new Set(attempts.map((a) => a.questionId));
+    const ragRW = storedRag.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
+    const ragMath = storedRag.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
+    const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, mockSettings ?? DEFAULT_SETTINGS, storedRag);
+    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
+    const staticMath = staticAll.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
+    const merge = (rag: Question[], fallback: Question[], target: number): Question[] => {
+      const used = new Set(rag.map((q) => q.id));
+      return [...rag, ...fallback.filter((q) => !used.has(q.id))].sort(() => Math.random() - 0.5).slice(0, target);
+    };
+    const qs = [...merge(ragRW, staticRW, RW_COUNT), ...merge(ragMath, staticMath, MATH_COUNT)];
+    setQuestions(qs);
+  };
+
+  if (questions) {
+    return (
+      <MockRunner
+        questions={questions}
+        email={user?.email}
+        date={today}
+        session={storedSession}
+      />
+    );
+  }
 
   const rwPool = storedRag.filter((q) => q.section === 'Reading & Writing').length;
   const mathPool = storedRag.filter((q) => q.section === 'Math').length;
+
+  // Complete today banner
+  if (sessionState === 'complete') {
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
+        <Card className="text-center py-10">
+          <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-success/15 text-success">
+            <CheckCircle size={30} />
+          </div>
+          <h2 className="font-display text-2xl font-bold">Today's Mock Complete!</h2>
+          <p className="mx-auto mt-2 max-w-md text-muted text-sm">
+            You've already completed today's full-length SAT simulation. Come back tomorrow for a fresh test.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
+            <a href="/app/mock-history" className="btn-primary inline-flex items-center gap-2">
+              <History size={16} /> Review Today's Results
+            </a>
+          </div>
+          <p className="mt-4 text-xs text-muted">Only one mock test per day — just like the real SAT schedule.</p>
+        </Card>
+      </div>
+    );
+  }
+
+  // Resume banner
+  if (sessionState === 'resume') {
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
+        <Card className="text-center py-10">
+          <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-warning/15 text-warning">
+            <RotateCcw size={30} />
+          </div>
+          <h2 className="font-display text-2xl font-bold">Resume Today's Test</h2>
+          <p className="mx-auto mt-2 max-w-md text-muted text-sm">
+            You have an incomplete mock test from today. Pick up right where you left off — your timer continues from where it stopped.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
+            <button className="btn-primary inline-flex items-center gap-2" onClick={resume}>
+              <RotateCcw size={16} /> Resume from Question {(storedSession?.rw_idx ?? 0) + (storedSession?.math_idx ?? 0) + 1}
+            </button>
+          </div>
+          <p className="mt-4 text-xs text-muted">Phase: {storedSession?.phase?.toUpperCase() ?? 'R&W'}</p>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -108,8 +222,12 @@ export default function MockTest() {
             </span>
           </div>
         )}
-        <button className="btn-primary mt-8 px-10 py-3.5 text-base" onClick={start}>
-          <Play size={18} /> Begin Today's Mock Test
+        <button
+          className="btn-primary mt-8 px-10 py-3.5 text-base"
+          onClick={start}
+          disabled={sessionState === 'checking'}
+        >
+          <Play size={18} /> {sessionState === 'checking' ? 'Checking…' : "Begin Today's Mock Test"}
         </button>
         {error && <p className="mt-3 text-sm text-danger">{error}</p>}
         <p className="mt-4 text-xs text-muted">Put your phone on silent · Find a quiet space · Treat it like test day</p>
@@ -131,6 +249,12 @@ export default function MockTest() {
           ))}
         </div>
       </Card>
+
+      <div className="text-center">
+        <a href="/app/mock-history" className="text-xs text-muted hover:text-white transition-colors inline-flex items-center gap-1.5">
+          <History size={13} /> View past mock tests
+        </a>
+      </div>
     </div>
   );
 }

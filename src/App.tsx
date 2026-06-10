@@ -22,6 +22,7 @@ import TeamDashboard from '@/pages/TeamDashboard';
 import Admin from '@/pages/Admin';
 import RagAdmin from '@/pages/RagAdmin';
 import Settings from '@/pages/Settings';
+import MockHistory from '@/pages/MockHistory';
 
 // Panels a student may reach before the benchmark evaluations are complete.
 const UNLOCKED_BEFORE_BENCHMARK = ['/app/evaluation', '/app/settings'];
@@ -72,6 +73,7 @@ export default function App() {
       <Route path="/app/weakness" element={<Protected><Weakness /></Protected>} />
       <Route path="/app/plan" element={<Protected><StudyPlan /></Protected>} />
       <Route path="/app/mock" element={<Protected><MockTest /></Protected>} />
+      <Route path="/app/mock-history" element={<Protected><MockHistory /></Protected>} />
       <Route path="/app/evaluation" element={<Protected><Evaluation /></Protected>} />
       <Route path="/app/errors" element={<Protected><ErrorLog /></Protected>} />
       <Route path="/app/report" element={<Protected><ProgressReport /></Protected>} />

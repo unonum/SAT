@@ -1042,7 +1042,40 @@ function getMockSessions(attempts: Attempt[]): MockSession[] {
     }));
 }
 
+const API = import.meta.env.VITE_API_BASE ?? '';
+
+interface DBSessionSummary {
+  id: string;
+  date: string;
+  status: string;
+  rw_correct: number;
+  rw_total: number;
+  math_correct: number;
+  math_total: number;
+  completed_at: number | null;
+  phase: string;
+  rw_idx: number;
+  math_idx: number;
+}
+
 function MockDailyTracker({ students }: { students: StudentView[] }) {
+  const [expandedEmail, setExpandedEmail] = useState<string | null>(null);
+  const [dbSessions, setDbSessions] = useState<Record<string, DBSessionSummary[]>>({});
+  const [loadingEmail, setLoadingEmail] = useState<string | null>(null);
+
+  const toggleStudent = async (email: string) => {
+    if (expandedEmail === email) { setExpandedEmail(null); return; }
+    setExpandedEmail(email);
+    if (dbSessions[email]) return;
+    setLoadingEmail(email);
+    try {
+      const r = await fetch(`${API}/api/mock-sessions?email=${encodeURIComponent(email)}`);
+      const d = await r.json();
+      setDbSessions((prev) => ({ ...prev, [email]: d.sessions ?? [] }));
+    } catch { /* ignore */ }
+    finally { setLoadingEmail(null); }
+  };
+
   // Build 14-day calendar grid
   const today = new Date();
   const days: string[] = [];
@@ -1154,6 +1187,53 @@ function MockDailyTracker({ students }: { students: StudentView[] }) {
                   </div>
                 );
               })()}
+
+              {/* Expandable session history from DB */}
+              <div className="mt-3 border-t border-white/10 pt-3">
+                <button
+                  className="text-xs text-brand-400 hover:text-brand-300 transition-colors font-medium"
+                  onClick={() => toggleStudent(s.email)}
+                >
+                  {expandedEmail === s.email ? '▲ Hide session history' : '▼ View full session history'}
+                </button>
+                {expandedEmail === s.email && (
+                  <div className="mt-3">
+                    {loadingEmail === s.email ? (
+                      <p className="text-xs text-muted">Loading…</p>
+                    ) : (dbSessions[s.email] ?? []).length === 0 ? (
+                      <p className="text-xs text-muted">No sessions found in database.</p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        {(dbSessions[s.email] ?? []).map((ses) => {
+                          const total = ses.rw_correct + ses.math_correct;
+                          const totalQ = ses.rw_total + ses.math_total;
+                          const pct = totalQ > 0 ? Math.round((total / totalQ) * 100) : 0;
+                          const score = totalQ > 0 ? Math.round(200 + (total / totalQ) * 600) : 0;
+                          return (
+                            <div key={ses.id} className="flex items-center justify-between gap-2 rounded-lg bg-white/5 px-3 py-2 text-xs">
+                              <div className="flex items-center gap-2">
+                                <span className={`h-2 w-2 rounded-full ${ses.status === 'complete' ? 'bg-success' : 'bg-warning'}`} />
+                                <span className="font-medium">{ses.date}</span>
+                                <span className="text-muted">{ses.status === 'complete' ? 'Complete' : `In Progress (${ses.phase})`}</span>
+                              </div>
+                              {ses.status === 'complete' && totalQ > 0 ? (
+                                <div className="flex items-center gap-3">
+                                  <span className="text-muted">R&W {ses.rw_correct}/{ses.rw_total} · Math {ses.math_correct}/{ses.math_total}</span>
+                                  <span className={`font-bold ${pct >= 70 ? 'text-success' : pct >= 50 ? 'text-warning' : 'text-danger'}`}>
+                                    {score} ({pct}%)
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-muted">{ses.rw_idx + ses.math_idx} answered</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}

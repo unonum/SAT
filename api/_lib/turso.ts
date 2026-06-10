@@ -3,6 +3,7 @@ import { createClient, type Client } from '@libsql/client/http';
 let client: Client | null = null;
 let schemaReady = false;
 let ragSchemaReady = false;
+let mockSchemaReady = false;
 
 export function getClient(): Client {
   if (client) return client;
@@ -182,6 +183,122 @@ export async function listSources(): Promise<Array<{ source_name: string; source
     chunk_count: row.chunk_count as number,
     created_at: row.created_at as number,
   }));
+}
+
+// ── Mock Sessions ─────────────────────────────────────────────────────────────
+
+export interface MockSessionRow {
+  id: string;
+  user_email: string;
+  date: string;            // YYYY-MM-DD
+  status: string;          // 'in-progress' | 'complete'
+  questions_json: string;  // JSON Question[]
+  answers_json: string;    // JSON Record<id, {selected, timeSec}>
+  phase: string;           // 'rw' | 'break' | 'math' | 'review'
+  rw_idx: number;
+  math_idx: number;
+  rw_started_at: number | null;
+  math_started_at: number | null;
+  started_at: number;
+  completed_at: number | null;
+  rw_correct: number;
+  rw_total: number;
+  math_correct: number;
+  math_total: number;
+}
+
+export async function ensureMockSchema(): Promise<void> {
+  if (mockSchemaReady) return;
+  const db = getClient();
+  await db.execute(`CREATE TABLE IF NOT EXISTS mock_sessions (
+    id               TEXT PRIMARY KEY,
+    user_email       TEXT NOT NULL,
+    date             TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'in-progress',
+    questions_json   TEXT NOT NULL DEFAULT '[]',
+    answers_json     TEXT NOT NULL DEFAULT '{}',
+    phase            TEXT NOT NULL DEFAULT 'rw',
+    rw_idx           INTEGER NOT NULL DEFAULT 0,
+    math_idx         INTEGER NOT NULL DEFAULT 0,
+    rw_started_at    INTEGER,
+    math_started_at  INTEGER,
+    started_at       INTEGER NOT NULL,
+    completed_at     INTEGER,
+    rw_correct       INTEGER NOT NULL DEFAULT 0,
+    rw_total         INTEGER NOT NULL DEFAULT 0,
+    math_correct     INTEGER NOT NULL DEFAULT 0,
+    math_total       INTEGER NOT NULL DEFAULT 0
+  )`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_mock_sessions_user ON mock_sessions(user_email, date)`);
+  mockSchemaReady = true;
+}
+
+function rowToMockSession(row: Record<string, unknown>): MockSessionRow {
+  return {
+    id: String(row.id ?? ''), user_email: String(row.user_email ?? ''),
+    date: String(row.date ?? ''), status: String(row.status ?? 'in-progress'),
+    questions_json: String(row.questions_json ?? '[]'),
+    answers_json: String(row.answers_json ?? '{}'),
+    phase: String(row.phase ?? 'rw'),
+    rw_idx: Number(row.rw_idx ?? 0), math_idx: Number(row.math_idx ?? 0),
+    rw_started_at: row.rw_started_at != null ? Number(row.rw_started_at) : null,
+    math_started_at: row.math_started_at != null ? Number(row.math_started_at) : null,
+    started_at: Number(row.started_at ?? 0),
+    completed_at: row.completed_at != null ? Number(row.completed_at) : null,
+    rw_correct: Number(row.rw_correct ?? 0), rw_total: Number(row.rw_total ?? 0),
+    math_correct: Number(row.math_correct ?? 0), math_total: Number(row.math_total ?? 0),
+  };
+}
+
+export async function upsertMockSession(s: MockSessionRow): Promise<void> {
+  const db = getClient();
+  await db.execute({
+    sql: `INSERT OR REPLACE INTO mock_sessions
+      (id,user_email,date,status,questions_json,answers_json,phase,
+       rw_idx,math_idx,rw_started_at,math_started_at,started_at,completed_at,
+       rw_correct,rw_total,math_correct,math_total)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    args: [
+      s.id, s.user_email.toLowerCase(), s.date, s.status,
+      s.questions_json, s.answers_json, s.phase,
+      s.rw_idx, s.math_idx, s.rw_started_at ?? null, s.math_started_at ?? null,
+      s.started_at, s.completed_at ?? null,
+      s.rw_correct, s.rw_total, s.math_correct, s.math_total,
+    ],
+  });
+}
+
+export async function getMockSession(userEmail: string, dateOrId: string): Promise<MockSessionRow | null> {
+  const db = getClient();
+  // Try as date first, then as id
+  const byDate = await db.execute({
+    sql: `SELECT * FROM mock_sessions WHERE user_email=? AND date=? LIMIT 1`,
+    args: [userEmail.toLowerCase(), dateOrId],
+  });
+  if (byDate.rows.length) return rowToMockSession(byDate.rows[0] as Record<string, unknown>);
+  const byId = await db.execute({
+    sql: `SELECT * FROM mock_sessions WHERE id=? LIMIT 1`,
+    args: [dateOrId],
+  });
+  if (byId.rows.length) return rowToMockSession(byId.rows[0] as Record<string, unknown>);
+  return null;
+}
+
+/** Returns sessions sorted newest first — questions_json omitted to keep payload small. */
+export async function listMockSessions(userEmail: string, limit = 60): Promise<Omit<MockSessionRow, 'questions_json'>[]> {
+  const db = getClient();
+  const result = await db.execute({
+    sql: `SELECT id,user_email,date,status,answers_json,phase,rw_idx,math_idx,
+                 rw_started_at,math_started_at,started_at,completed_at,
+                 rw_correct,rw_total,math_correct,math_total
+          FROM mock_sessions WHERE user_email=? ORDER BY date DESC LIMIT ?`,
+    args: [userEmail.toLowerCase(), limit],
+  });
+  return result.rows.map((r) => {
+    const row = rowToMockSession({ ...r as Record<string, unknown>, questions_json: '[]' });
+    const { questions_json: _q, ...rest } = row;
+    return rest;
+  });
 }
 
 /** Cosine similarity between two equal-length vectors (pure JS). */
