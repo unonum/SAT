@@ -17,6 +17,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (req.method === 'DELETE') {
+    // ?purge-broken=true — remove all stored questions that reference missing data
+    if (req.query['purge-broken'] === 'true') {
+      const BROKEN_PATTERNS = [
+        /\bthe table\b/i, /\bthe graph\b/i, /\bthe chart\b/i, /\bthe figure\b/i,
+        /\bthe diagram\b/i, /\baccording to the\b/i, /\bshown (above|below|in the)\b/i,
+        /\bas shown\b/i, /\bbased on the (table|graph|chart|data|figure)\b/i,
+        /\bin the (table|graph|chart|figure)\b/i,
+      ];
+      const all = await fetchRagQuestions();
+      const broken = all.filter(
+        (q) => !q.passage?.trim() && BROKEN_PATTERNS.some((re) => re.test(q.prompt))
+      );
+      for (const q of broken) await deleteRagQuestion(q.id);
+      return res.status(200).json({ ok: true, deleted: broken.length, ids: broken.map((q) => q.id) });
+    }
+
     const id = req.query.id as string | undefined;
     if (!id) return res.status(400).json({ error: 'id is required' });
     await deleteRagQuestion(id);

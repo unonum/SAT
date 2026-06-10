@@ -277,11 +277,27 @@ function parseQuestions(text: string): ClientQuestion[] {
   try { return JSON.parse(text.slice(s, e + 1)) as ClientQuestion[]; } catch { return []; }
 }
 
+// Phrases that signal the question references external data not included in the question.
+// If any are present without a non-empty passage, the question is broken.
+const REQUIRES_PASSAGE_PATTERNS = [
+  /\bthe table\b/i, /\bthe graph\b/i, /\bthe chart\b/i, /\bthe figure\b/i,
+  /\bthe diagram\b/i, /\bthe data\b/i, /\bthe image\b/i, /\bthe passage\b/i,
+  /\bthe text\b/i, /\baccording to the\b/i, /\bshown (above|below|in the)\b/i,
+  /\bas shown\b/i, /\bbased on the (table|graph|chart|data|figure)\b/i,
+  /\bin the (table|graph|chart|figure)\b/i,
+];
+
 function isValid(q: ClientQuestion | undefined): q is ClientQuestion {
   if (!q?.prompt || !q.subtopic || !VALID_SECTIONS.has(q.section) || !VALID_DIFFICULTIES.has(q.difficulty)) return false;
   if (!Array.isArray(q.choices) || q.choices.length !== 4) return false;
   const ids = q.choices.map((c) => c.id);
-  return ids.join('') === 'ABCD' && ids.includes(q.correct) && q.choices.every((c) => Boolean(c.text?.trim()));
+  if (ids.join('') !== 'ABCD' || !ids.includes(q.correct) || !q.choices.every((c) => Boolean(c.text?.trim()))) return false;
+
+  // Reject any question that references a table/graph/figure without including one
+  const needsPassage = REQUIRES_PASSAGE_PATTERNS.some((re) => re.test(q.prompt) || q.choices.some((c) => re.test(c.text)));
+  if (needsPassage && !q.passage?.trim()) return false;
+
+  return true;
 }
 
 async function ensureNoveltySchema(): Promise<void> {
@@ -396,9 +412,11 @@ ${contextText.slice(0, 5000)}
 STRICT OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown fences, no explanation outside the array.
 - Each object must have: topic, subtopic, section, difficulty, passage (string|null), prompt, choices (exactly [{id:"A",...},{id:"B",...},{id:"C",...},{id:"D",...}]), correct, parTimeSec, explanation.
+- SELF-CONTAINED RULE (CRITICAL): Every question must be 100% answerable from only the text in "prompt" and "passage". NEVER reference a table, graph, chart, figure, diagram, or external data that is not fully written out in the "passage" field. If a question needs a table, include the complete table as plain text in "passage". If no table/data is needed, set passage to null. Questions that say "the table shows..." or "according to the graph..." without including that table/graph in passage will be REJECTED.
 - explanation must have: correctWhy (why correct answer is right), fastStrategy (concrete test-day shortcut, e.g. "plug in x=2"), simplerView (ELI5 restatement), trapNote (what makes students pick wrong answer), timeTrick (how to solve in under 60s), whyWrong (object mapping each distractor id to WHY it's tempting, not just "it's wrong").
 - For repairMode=true slots: the question must directly test the focusMistake concept — make it impossible to guess correctly without understanding the underlying rule.
 - Incrementally harder within each topic's current ability range — not randomly hard.
+- passage field: use it for reading comprehension excerpts, math word-problem context, or any table/data the question references. If no external content is needed, set it to null.
 
 FORBIDDEN PROMPTS (do not reuse or paraphrase):
 ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join('\n')}`;
@@ -406,7 +424,7 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
     // ── 5. Call OpenAI and Anthropic in parallel ──────────────────────────
     const [oaiResult, anthropicResult] = await Promise.allSettled([
       openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4o-2024-11-20',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.85,
       }).then((r) => parseQuestions(r.choices[0]?.message?.content ?? '')),
@@ -415,7 +433,7 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
         const Anthropic = (await import('@anthropic-ai/sdk')).default;
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
         const r = await anthropic.messages.create({
-          model: 'claude-sonnet-4-6',
+          model: 'claude-sonnet-4-6-20251001',
           max_tokens: 4096,
           messages: [{ role: 'user', content: prompt }],
         });

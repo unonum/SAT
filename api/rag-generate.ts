@@ -80,7 +80,7 @@ async function generateWithOpenAI(
   const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText, existingCount);
 
   const resp = await openai.chat.completions.create({
-    model: 'gpt-4o',
+    model: 'gpt-4o-2024-11-20',
     messages: [{ role: 'user', content: systemPrompt }],
     temperature: 0.8,
   });
@@ -103,7 +103,7 @@ async function generateWithAnthropic(
   const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText, existingCount);
 
   const resp = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-4-6-20251001',
     max_tokens: 4096,
     messages: [{ role: 'user', content: systemPrompt }],
   });
@@ -126,7 +126,10 @@ function buildSystemPrompt(
     : '';
   return `You are an expert SAT question writer. Generate exactly ${count} novel, non-repetitive SAT-style questions for the topic "${topic}" at "${difficulty}" difficulty for the "${section}" section. Use the provided context material to inform the questions but create original content. ${noveltyNote}
 
-CRITICAL: Return ONLY valid JSON array, no markdown, no explanation. Each question must follow this exact schema:
+CRITICAL RULES:
+1. Return ONLY valid JSON array, no markdown, no explanation.
+2. SELF-CONTAINED (MANDATORY): Every question must be fully answerable from ONLY the text in "prompt" and "passage". NEVER reference a table, graph, chart, figure, or data that is not written out in the "passage" field. If the question needs data, include the complete data as plain text in "passage". If no data is needed, set passage to null. Questions that say "the table shows..." without including that table in passage are INVALID.
+Each question must follow this exact schema:
 {
   "id": "rag-${topic}-${ts}-0",
   "topic": "${topic}",
