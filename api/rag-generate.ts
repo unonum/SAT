@@ -129,7 +129,8 @@ function buildSystemPrompt(
 
 CRITICAL RULES:
 1. Return ONLY valid JSON array, no markdown, no explanation.
-2. SELF-CONTAINED (MANDATORY): Every question must be fully answerable from ONLY the text in "prompt" and "passage". NEVER reference a table, graph, chart, figure, or data that is not written out in the "passage" field. If the question needs data, include the complete data as plain text in "passage". If no data is needed, set passage to null. Questions that say "the table shows..." without including that table in passage are INVALID.
+2. SECTION RULE: Every question's "section" field MUST be "${section}". Do NOT generate Math-style calculation questions for Reading & Writing, and do NOT generate reading/grammar questions for Math.
+3. SELF-CONTAINED (MANDATORY): Every question must be fully answerable from ONLY the text in "prompt" and "passage". NEVER reference a line graph, bar chart, scatter plot, pie chart, histogram, coordinate plane, table, figure, diagram, or any visual that is not fully reproduced as plain text in "passage". If the question needs data, include the COMPLETE data as plain text in "passage". If no external content is needed, set passage to null. Questions that mention "the line graph shows..." or "based on the graph..." without including that data in passage are INVALID and will be deleted.
 Each question must follow this exact schema:
 {
   "id": "rag-${topic}-${ts}-0",

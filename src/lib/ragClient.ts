@@ -232,6 +232,16 @@ export async function fetchRagQuestions(topic?: string, difficulty?: string): Pr
   return data.rows.map(rowToQuestion);
 }
 
+/** Deletes all stored questions that reference missing visuals (line graphs, tables, etc.) without a passage. */
+export async function purgeBrokenQuestions(): Promise<{ deleted: number; ids: string[] }> {
+  const resp = await fetch('/api/rag-questions?purge-broken=true', { method: 'DELETE' });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error((err as { error?: string }).error ?? 'Purge failed');
+  }
+  return resp.json() as Promise<{ deleted: number; ids: string[] }>;
+}
+
 export async function deleteRagQuestion(id: string): Promise<void> {
   const resp = await fetch(`/api/rag-questions?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',

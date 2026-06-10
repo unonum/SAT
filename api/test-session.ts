@@ -278,7 +278,7 @@ function parseQuestions(text: string): ClientQuestion[] {
   try { return JSON.parse(text.slice(s, e + 1)) as ClientQuestion[]; } catch { return []; }
 }
 
-// Phrases that signal the question references external data not included in the question.
+// Phrases that signal the question references external visual/data not included in the question.
 // If any are present without a non-empty passage, the question is broken.
 const REQUIRES_PASSAGE_PATTERNS = [
   /\bthe table\b/i, /\bthe graph\b/i, /\bthe chart\b/i, /\bthe figure\b/i,
@@ -286,6 +286,12 @@ const REQUIRES_PASSAGE_PATTERNS = [
   /\bthe text\b/i, /\baccording to the\b/i, /\bshown (above|below|in the)\b/i,
   /\bas shown\b/i, /\bbased on the (table|graph|chart|data|figure)\b/i,
   /\bin the (table|graph|chart|figure)\b/i,
+  // Specific chart types that are always visual-only and cannot be reproduced as text
+  /\bline graph\b/i, /\bbar graph\b/i, /\bbar chart\b/i, /\bpie chart\b/i,
+  /\bscatter plot\b/i, /\bhistogram\b/i, /\bvenn diagram\b/i, /\bnumber line\b/i,
+  /\bcoordinate plane\b/i, /\bgraphed (above|below|on)\b/i,
+  /\bthe plot\b/i, /\bplotted (above|below|on)\b/i,
+  /\bthe following (table|graph|chart|figure|diagram|data)\b/i,
 ];
 
 function isValid(q: ClientQuestion | undefined): q is ClientQuestion {
@@ -423,7 +429,8 @@ ${contextText.slice(0, 5000)}
 STRICT OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown fences, no explanation outside the array.
 - Each object must have: topic, subtopic, section, difficulty, passage (string|null), prompt, choices (exactly [{id:"A",...},{id:"B",...},{id:"C",...},{id:"D",...}]), correct, parTimeSec, explanation.
-- SELF-CONTAINED RULE (CRITICAL): Every question must be 100% answerable from only the text in "prompt" and "passage". NEVER reference a table, graph, chart, figure, diagram, or external data that is not fully written out in the "passage" field. If a question needs a table, include the complete table as plain text in "passage". If no table/data is needed, set passage to null. Questions that say "the table shows..." or "according to the graph..." without including that table/graph in passage will be REJECTED.
+- SECTION RULE (CRITICAL): The "section" field in your response MUST exactly match the slot's section value. Math slots → "Math" questions only. Reading & Writing slots → "Reading & Writing" questions only. NEVER place a Math-style calculation or equation in an R&W slot, and NEVER place a reading-passage or grammar question in a Math slot.
+- SELF-CONTAINED RULE (CRITICAL): Every question must be 100% answerable from only the text in "prompt" and "passage". NEVER reference a line graph, bar chart, scatter plot, pie chart, histogram, coordinate plane, table, figure, diagram, or any visual that is not fully reproduced as plain text in the "passage" field. Questions that say "the line graph shows..." or "based on the graph..." without including the actual data in "passage" will be REJECTED. If no external content is needed, set passage to null.
 - explanation must have: correctWhy (why correct answer is right), fastStrategy (concrete test-day shortcut, e.g. "plug in x=2"), simplerView (ELI5 restatement), trapNote (what makes students pick wrong answer), timeTrick (how to solve in under 60s), whyWrong (object mapping each distractor id to WHY it's tempting, not just "it's wrong").
 - For repairMode=true slots: the question must directly test the focusMistake concept — make it impossible to guess correctly without understanding the underlying rule.
 - Incrementally harder within each topic's current ability range — not randomly hard.
@@ -466,12 +473,20 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
       if (!isValid(q)) continue;
       if (!isNovel(q.prompt, acceptedPrompts)) continue;
       const slot = slots[finalQuestions.length] ?? slots[slots.length - 1];
+
+      // Reject if LLM returned a question whose section content doesn't match the slot.
+      // e.g. a Math-worded question should never go into an R&W slot.
+      const qSection = q.section as string;
+      const isMathContent = qSection === 'Math';
+      const slotWantsMath = slot.section === 'Math';
+      if (isMathContent !== slotWantsMath) continue;
+
       const id = `rag-${slot.topic}-${now}-${finalQuestions.length}-${Math.random().toString(36).slice(2, 7)}`;
       const question: ClientQuestion = {
         ...q,
         id,
         topic: slot.topic,
-        section: slot.section,
+        section: slot.section,   // authoritative — slot owns the section
         difficulty: slot.difficulty,
         ragGenerated: true,
         sourceChunk: topChunkId ?? undefined,

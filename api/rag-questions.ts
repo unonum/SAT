@@ -25,6 +25,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           /\bthe diagram\b/i, /\baccording to the\b/i, /\bshown (above|below|in the)\b/i,
           /\bas shown\b/i, /\bbased on the (table|graph|chart|data|figure)\b/i,
           /\bin the (table|graph|chart|figure)\b/i,
+          /\bline graph\b/i, /\bbar graph\b/i, /\bbar chart\b/i, /\bpie chart\b/i,
+          /\bscatter plot\b/i, /\bhistogram\b/i, /\bvenn diagram\b/i, /\bnumber line\b/i,
+          /\bcoordinate plane\b/i, /\bgraphed (above|below|on)\b/i,
+          /\bthe plot\b/i, /\bplotted (above|below|on)\b/i,
+          /\bthe following (table|graph|chart|figure|diagram|data)\b/i,
         ];
         const all = await fetchRagQuestions();
         const broken = all.filter(

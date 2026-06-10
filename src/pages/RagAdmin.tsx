@@ -4,7 +4,7 @@ import {
   Upload, Loader2, CheckCircle2, XCircle, Trash2, ChevronDown, ChevronUp,
   RefreshCw, Database,
 } from 'lucide-react';
-import { ingestFileWithProgress, generateRagQuestions, fetchRagQuestions, deleteRagQuestion, listSources } from '@/lib/ragClient';
+import { ingestFileWithProgress, generateRagQuestions, fetchRagQuestions, deleteRagQuestion, purgeBrokenQuestions, listSources } from '@/lib/ragClient';
 import type { Question } from '@/lib/types';
 import { TOPICS } from '@/lib/topics';
 
@@ -411,6 +411,23 @@ function LibraryTab() {
   const [filterTopic, setFilterTopic] = useState('');
   const [filterDiff, setFilterDiff] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
+
+  const handlePurgeBroken = async () => {
+    if (!confirm('This will delete all stored questions that reference missing visuals (line graphs, charts, tables, etc.) without including the data in the passage field. Continue?')) return;
+    setPurging(true);
+    setPurgeResult(null);
+    try {
+      const result = await purgeBrokenQuestions();
+      setPurgeResult(`Deleted ${result.deleted} broken question${result.deleted !== 1 ? 's' : ''}.`);
+      load();
+    } catch (e) {
+      setPurgeResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPurging(false);
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -456,7 +473,22 @@ function LibraryTab() {
         <button className="btn-ghost text-xs gap-1" onClick={load}>
           <RefreshCw size={12} /> Refresh
         </button>
+        <button
+          className="btn-ghost text-xs gap-1 text-danger border-danger/30 hover:bg-danger/10"
+          onClick={handlePurgeBroken}
+          disabled={purging}
+        >
+          <Trash2 size={12} /> {purging ? 'Purging…' : 'Purge Broken Questions'}
+        </button>
+        {purgeResult && (
+          <span className={`text-xs px-2 py-1 rounded-lg ${purgeResult.startsWith('Error') ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
+            {purgeResult}
+          </span>
+        )}
       </div>
+      <p className="text-xs text-muted -mt-2">
+        "Purge Broken" removes questions that reference line graphs, charts, tables, or other visuals without including the data in the passage field.
+      </p>
 
       {loading ? (
         <div className="flex justify-center py-10">
