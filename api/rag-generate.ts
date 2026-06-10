@@ -25,7 +25,7 @@ function wordOverlap(a: string, b: string): number {
 function deduplicateQuestions(questions: RawQuestion[]): RawQuestion[] {
   const unique: RawQuestion[] = [];
   for (const q of questions) {
-    const isDupe = unique.some((u) => wordOverlap(u.prompt, q.prompt) > 0.8);
+    const isDupe = unique.some((u) => wordOverlap(u.prompt ?? '', q.prompt ?? '') > 0.8);
     if (!isDupe) unique.push(q);
   }
   return unique;

@@ -37,7 +37,7 @@ async function extractText(filetype: string, buffer: Buffer): Promise<string> {
       const sheet = workbook.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { header: 1 });
       parts.push(`Sheet: ${sheetName}`);
-      for (const row of rows as unknown[][]) {
+      for (const row of (rows as unknown) as unknown[][]) {
         if (Array.isArray(row) && row.length > 0) {
           parts.push(row.map((c) => (c != null ? String(c) : '')).join('\t'));
         }
