@@ -17,7 +17,7 @@ import type { Question } from '@/lib/types';
 import { computeTopicMastery } from '@/lib/adaptive';
 import { TOPICS } from '@/lib/topics';
 import { createNovelTestSession } from '@/lib/ragClient';
-import { QUESTION_BANK } from '@/lib/questionBank';
+import { buildEvalTest } from '@/lib/evaluation';
 
 export default function Evaluation() {
   const attempts = useStore((s) => s.attempts);
@@ -31,10 +31,20 @@ export default function Evaluation() {
     setLoadingId(def.id);
     setError('');
     try {
-      const questions = await createNovelTestSession({
-        email: user?.email ?? '', mode: def.mode, count: evalTestSize(def.id),
-        attempts, fallbackQuestions: QUESTION_BANK,
-      });
+      let questions: Question[];
+      if (remoteEnabled && user?.email) {
+        try {
+          questions = await createNovelTestSession({
+            email: user.email, mode: def.mode, count: evalTestSize(def.id),
+            attempts, fallbackQuestions: buildEvalTest(def.id),
+          });
+        } catch {
+          questions = buildEvalTest(def.id);
+        }
+      } else {
+        questions = buildEvalTest(def.id);
+      }
+      if (!questions.length) questions = buildEvalTest(def.id);
       setActive({ def, questions });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create the evaluation');
