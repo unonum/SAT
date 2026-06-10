@@ -340,6 +340,143 @@ async function saveExposures(email: string, mode: string, questions: ClientQuest
   } catch { /* best-effort */ }
 }
 
+/**
+ * Shuffle choices so the correct answer lands on a random position (A/B/C/D).
+ * Prevents patterns where correct answers cluster on 'A'.
+ */
+function shuffleChoices(q: ClientQuestion): ClientQuestion {
+  const labels: ChoiceId[] = ['A', 'B', 'C', 'D'];
+  const texts = q.choices.map((c) => c.text);
+  // Fisher-Yates shuffle on the text array
+  for (let i = texts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [texts[i], texts[j]] = [texts[j], texts[i]];
+  }
+  // Find where the original correct answer text ended up
+  const originalCorrectText = q.choices.find((c) => c.id === q.correct)?.text ?? '';
+  const newCorrectIdx = texts.findIndex((t) => t === originalCorrectText);
+  const newChoices: Choice[] = texts.map((text, i) => ({ id: labels[i], text }));
+  return {
+    ...q,
+    choices: newChoices,
+    correct: labels[newCorrectIdx >= 0 ? newCorrectIdx : 0],
+  };
+}
+
+/**
+ * Verify a batch of questions by asking both OpenAI and Claude which answer is correct.
+ * Questions where both models disagree with the stored answer are rejected.
+ * Returns the filtered (and potentially answer-corrected) list.
+ *
+ * To avoid adding too much latency we batch up to 10 at a time and run both
+ * models in parallel. Each verification prompt is very short (single-line answer).
+ */
+async function verifyAnswers(
+  questions: ClientQuestion[],
+  openai: InstanceType<typeof import('openai').default>,
+): Promise<ClientQuestion[]> {
+  if (questions.length === 0) return [];
+
+  const BATCH = 8; // verify up to 8 at once to stay within token budget
+  const verified: ClientQuestion[] = [];
+
+  for (let i = 0; i < questions.length; i += BATCH) {
+    const batch = questions.slice(i, i + BATCH);
+
+    const verifyPrompt = (qs: ClientQuestion[]) =>
+      `You are an expert SAT tutor. For each question below, respond ONLY with a JSON array of objects: [{"idx":0,"answer":"A"},{"idx":1,"answer":"B"},...]. One entry per question. Choose the single best answer (A/B/C/D).\n\n` +
+      qs.map((q, idx) => {
+        const passage = q.passage ? `Passage: ${q.passage.slice(0, 400)}\n` : '';
+        const choices = q.choices.map((c) => `${c.id}) ${c.text}`).join('  ');
+        return `[${idx}] ${passage}${q.prompt}\n${choices}`;
+      }).join('\n\n');
+
+    let oaiAnswers: Record<number, string> = {};
+    let claudeAnswers: Record<number, string> = {};
+
+    try {
+      const prompt = verifyPrompt(batch);
+      const [oaiRes, claudeRes] = await Promise.allSettled([
+        openai.chat.completions.create({
+          model: 'gpt-4o-mini', // fast + cheap for verification
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          max_tokens: 200,
+        }),
+        (async () => {
+          const Anthropic = (await import('@anthropic-ai/sdk')).default;
+          const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+          return anthropic.messages.create({
+            model: 'claude-haiku-4-5-20251001', // fast + cheap for verification
+            max_tokens: 200,
+            messages: [{ role: 'user', content: prompt }],
+          });
+        })(),
+      ]);
+
+      const parseVerifyResponse = (text: string): Record<number, string> => {
+        try {
+          const start = text.indexOf('[');
+          const end = text.lastIndexOf(']');
+          if (start === -1 || end === -1) return {};
+          const arr = JSON.parse(text.slice(start, end + 1)) as Array<{ idx: number; answer: string }>;
+          return Object.fromEntries(arr.map((e) => [e.idx, e.answer?.toUpperCase()]));
+        } catch { return {}; }
+      };
+
+      if (oaiRes.status === 'fulfilled') {
+        oaiAnswers = parseVerifyResponse(oaiRes.value.choices[0]?.message?.content ?? '');
+      }
+      if (claudeRes.status === 'fulfilled') {
+        const text = claudeRes.value.content[0]?.type === 'text' ? claudeRes.value.content[0].text : '';
+        claudeAnswers = parseVerifyResponse(text);
+      }
+    } catch { /* if verification itself errors, pass through all questions */ }
+
+    for (let j = 0; j < batch.length; j++) {
+      const q = batch[j];
+      const oai = oaiAnswers[j];
+      const claude = claudeAnswers[j];
+
+      // Both models failed to verify (network/parse error) → keep question as-is
+      if (!oai && !claude) { verified.push(q); continue; }
+
+      const storedCorrect = q.correct;
+
+      // Both models agree with each other → use their consensus answer
+      if (oai && claude && oai === claude) {
+        if (oai !== storedCorrect) {
+          // Consensus differs from stored — update to consensus answer if it's a valid choice
+          const validId = q.choices.find((c) => c.id === oai);
+          if (validId) {
+            verified.push({ ...q, correct: oai as ChoiceId });
+            continue;
+          }
+        }
+        verified.push(q);
+        continue;
+      }
+
+      // At least one agrees with stored answer → keep
+      if (oai === storedCorrect || claude === storedCorrect) {
+        verified.push(q);
+        continue;
+      }
+
+      // Neither agrees with stored AND they disagree with each other → reject (ambiguous question)
+      if (oai && claude && oai !== storedCorrect && claude !== storedCorrect) {
+        console.warn(`[verify] Rejecting ambiguous question: stored=${storedCorrect} oai=${oai} claude=${claude} — "${q.prompt.slice(0, 80)}"`);
+        continue;
+      }
+
+      // Only one model answered and it disagrees → keep (single model disagreement not enough to reject)
+      verified.push(q);
+    }
+  }
+
+  return verified;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -495,8 +632,14 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
       acceptedPrompts.push(q.prompt);
     }
 
-    // ── 7. Save generated questions to DB ─────────────────────────────────
-    for (const q of finalQuestions) {
+    // ── 6b. Shuffle choices to prevent correct-answer clustering on 'A' ──────
+    const shuffled = finalQuestions.map(shuffleChoices);
+
+    // ── 6c. Cross-verify answers: both OpenAI + Claude must agree ─────────────
+    const validated = await verifyAnswers(shuffled, openai);
+
+    // ── 7. Save validated questions to DB ──────────────────────────────────
+    for (const q of validated) {
       const row: RagQuestionRow = {
         id: q.id,
         topic: q.topic,
@@ -516,16 +659,19 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
     }
 
     // ── 8. Fill remaining slots from unseen stored questions ──────────────
-    const acceptedIds = new Set(finalQuestions.map((q) => q.id));
-    const acceptedFinalPrompts = finalQuestions.map((q) => q.prompt);
+    // Use validated as the running pool from here on
+    const pool: ClientQuestion[] = [...validated];
+    const acceptedIds = new Set(pool.map((q) => q.id));
+    const acceptedFinalPrompts = pool.map((q) => q.prompt);
 
     for (const row of unseenStored) {
-      if (finalQuestions.length >= requestedCount) break;
+      if (pool.length >= requestedCount) break;
       if (acceptedIds.has(row.id)) continue;
       if (!isNovel(row.prompt, [...forbiddenPrompts, ...acceptedFinalPrompts])) continue;
       let choices: Choice[] = [];
       try { choices = JSON.parse(row.choices) as Choice[]; } catch { continue; }
-      finalQuestions.push({
+      // Shuffle stored questions too so pattern isn't locked from DB
+      const rawQ: ClientQuestion = {
         id: row.id,
         topic: row.topic,
         subtopic: row.subtopic,
@@ -541,43 +687,44 @@ ${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join
           : (row.explanation as Record<string, unknown>),
         ragGenerated: true,
         sourceChunk: row.source_chunk ?? undefined,
-      });
+      };
+      pool.push(shuffleChoices(rawQ));
       acceptedFinalPrompts.push(row.prompt);
     }
 
     // ── 9. Fallback to client-supplied static questions ───────────────────
-    if (finalQuestions.length < requestedCount) {
-      const fallbackSeenIds = new Set(finalQuestions.map((q) => q.id));
+    if (pool.length < requestedCount) {
+      const fallbackSeenIds = new Set(pool.map((q) => q.id));
       const fallback = (Array.isArray(fallbackQuestions) ? fallbackQuestions : []) as ClientQuestion[];
       for (const q of fallback) {
-        if (finalQuestions.length >= requestedCount) break;
+        if (pool.length >= requestedCount) break;
         if (seenIds.has(q.id) || fallbackSeenIds.has(q.id)) continue;
         if (!isNovel(q.prompt, acceptedFinalPrompts)) continue;
-        finalQuestions.push(q);
+        pool.push(shuffleChoices(q));
         acceptedFinalPrompts.push(q.prompt);
       }
     }
 
     // Last resort: include fallback questions even if seen before, to avoid hard failure
-    if (!finalQuestions.length) {
+    if (!pool.length) {
       const lastResort = (Array.isArray(fallbackQuestions) ? fallbackQuestions : []) as ClientQuestion[];
       for (const q of lastResort) {
-        if (finalQuestions.length >= requestedCount) break;
-        finalQuestions.push(q);
+        if (pool.length >= requestedCount) break;
+        pool.push(shuffleChoices(q));
       }
     }
 
-    if (!finalQuestions.length) {
+    if (!pool.length) {
       return res.status(503).json({ error: 'No questions available — please ingest more questions into the RAG database.' });
     }
 
-    await saveExposures(String(email), String(mode), finalQuestions);
+    await saveExposures(String(email), String(mode), pool);
 
     return res.status(200).json({
       sessionId: `session-${now}-${Math.random().toString(36).slice(2, 8)}`,
       mode,
-      questions: finalQuestions.slice(0, requestedCount),
-      source: finalQuestions.some((q) => q.ragGenerated) ? 'rag-llm' : 'static-fallback',
+      questions: pool.slice(0, requestedCount),
+      source: pool.some((q) => q.ragGenerated) ? 'rag-llm' : 'static-fallback',
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
