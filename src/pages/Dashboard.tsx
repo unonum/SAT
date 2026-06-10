@@ -66,9 +66,9 @@ export default function Dashboard() {
                 <div className="text-xs font-bold uppercase tracking-widest text-white/60 mb-1">Your daily AI coach</div>
                 <p className="font-medium text-white leading-relaxed">{feedback.message}</p>
                 <p className="mt-1.5 text-sm text-white/75">→ {feedback.nextStep}</p>
-                <Link to="/app/practice" className="mt-4 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-brand-700 hover:bg-white/90 hover:scale-[1.02] transition-all shadow-lg">
+                <a href="/app/practice" className="mt-4 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-brand-700 hover:bg-white/90 hover:scale-[1.02] transition-all shadow-lg">
                   Start today's practice <ArrowRight size={14} />
-                </Link>
+                </a>
               </div>
             </div>
           </div>
@@ -98,7 +98,7 @@ export default function Dashboard() {
               <p className="font-semibold text-sm">Today's mock test complete!</p>
               <p className="text-xs text-muted mt-0.5">{todayMockAttempts.length} questions · {mockAcc}% accuracy</p>
             </div>
-            <Link to="/app/mock" className="text-xs font-semibold text-success hover:underline shrink-0">View results →</Link>
+            <a href="/app/mock" className="text-xs font-semibold text-success hover:underline shrink-0">View results →</a>
           </div>
         ) : (
           <div className="relative overflow-hidden rounded-2xl border border-brand-500/30 bg-gradient-to-r from-brand-500/8 to-accent-500/8 px-5 py-4">
@@ -110,9 +110,9 @@ export default function Dashboard() {
                 <p className="font-bold text-sm">Complete today's mock test</p>
                 <p className="text-xs text-muted mt-0.5">98 questions · 134 min · Full SAT simulation with analysis</p>
               </div>
-              <Link to="/app/mock" className="btn-primary px-4 py-2 text-sm shrink-0">
+              <a href="/app/mock" className="btn-primary px-4 py-2 text-sm shrink-0">
                 Start now <ArrowRight size={13} />
-              </Link>
+              </a>
             </div>
           </div>
         )}
@@ -211,11 +211,11 @@ export default function Dashboard() {
                 { to: '/app/mock', icon: <Brain size={17} />, label: 'Full mock test', grad: 'from-violet-500 to-brand-500' },
                 { to: '/app/errors', icon: <AlertTriangle size={17} />, label: 'Review error log', grad: 'from-danger to-orange-500' },
               ].map((a) => (
-                <Link key={a.to} to={a.to} className="group flex items-center gap-3 rounded-xl border border-[rgb(var(--border))] p-3 text-sm font-medium hover:border-brand-400 hover:bg-brand-500/5 transition-all">
+                <a key={a.to} href={a.to} className="group flex items-center gap-3 rounded-xl border border-[rgb(var(--border))] p-3 text-sm font-medium hover:border-brand-400 hover:bg-brand-500/5 transition-all">
                   <span className={`grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br ${a.grad} text-white shadow-soft`}>{a.icon}</span>
                   <span className="flex-1">{a.label}</span>
                   <ArrowRight size={15} className="text-muted group-hover:text-brand-500 group-hover:translate-x-0.5 transition-all" />
-                </Link>
+                </a>
               ))}
             </div>
           </Card>
