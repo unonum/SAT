@@ -184,8 +184,9 @@ export async function createNovelTestSession({
       mode,
       count,
       topics,
-      attempts: attempts.map(({ questionId, topic, difficulty, correct, ts }) => ({
-        questionId, topic, difficulty, correct, ts,
+      attempts: attempts.map(({ questionId, topic, difficulty, correct, ts, timeSec, confidence, mistakeCategory, retried }) => ({
+        questionId, topic, difficulty, correct, ts, timeSec,
+        confidence, mistakeCategory: mistakeCategory ?? null, retried: retried ?? false,
       })),
       avoidPrompts,
       fallbackQuestions,
