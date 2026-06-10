@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   ensureRagSchema,
   fetchAllChunks,
+  fetchRagQuestions,
   upsertRagQuestion,
   cosineSimilarity,
   type RagQuestionRow,
@@ -70,12 +71,13 @@ async function generateWithOpenAI(
   difficulty: string,
   count: number,
   section: string,
-  contextText: string
+  contextText: string,
+  existingCount = 0
 ): Promise<RawQuestion[]> {
   const OpenAI = (await import('openai')).default;
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-  const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText);
+  const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText, existingCount);
 
   const resp = await openai.chat.completions.create({
     model: 'gpt-4o',
@@ -92,12 +94,13 @@ async function generateWithAnthropic(
   difficulty: string,
   count: number,
   section: string,
-  contextText: string
+  contextText: string,
+  existingCount = 0
 ): Promise<RawQuestion[]> {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText);
+  const systemPrompt = buildSystemPrompt(topic, difficulty, count, section, contextText, existingCount);
 
   const resp = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -114,10 +117,14 @@ function buildSystemPrompt(
   difficulty: string,
   count: number,
   section: string,
-  contextText: string
+  contextText: string,
+  existingCount: number
 ): string {
   const ts = Date.now();
-  return `You are an expert SAT question writer. Generate exactly ${count} novel, non-repetitive SAT-style questions for the topic "${topic}" at "${difficulty}" difficulty for the "${section}" section. Use the provided context material to inform the questions but create original content.
+  const noveltyNote = existingCount > 0
+    ? `IMPORTANT: There are already ${existingCount} questions for this topic/difficulty in the database. Generate completely NEW questions that test DIFFERENT concepts, scenarios, or passages — do not repeat or rephrase existing ones.`
+    : '';
+  return `You are an expert SAT question writer. Generate exactly ${count} novel, non-repetitive SAT-style questions for the topic "${topic}" at "${difficulty}" difficulty for the "${section}" section. Use the provided context material to inform the questions but create original content. ${noveltyNote}
 
 CRITICAL: Return ONLY valid JSON array, no markdown, no explanation. Each question must follow this exact schema:
 {
@@ -193,17 +200,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contextText = `General SAT content for ${topic} at ${difficulty} level.`;
     }
 
+    // Load existing questions for this topic to avoid regenerating duplicates
+    const existing = await fetchRagQuestions({ topic, difficulty });
+    const existingPrompts = existing.map((q) => q.prompt);
+
     // Generate from both models in parallel
     const [openaiQuestions, anthropicQuestions] = await Promise.allSettled([
-      generateWithOpenAI(topic, difficulty, count, section, contextText),
-      generateWithAnthropic(topic, difficulty, count, section, contextText),
+      generateWithOpenAI(topic, difficulty, count, section, contextText, existing.length),
+      generateWithAnthropic(topic, difficulty, count, section, contextText, existing.length),
     ]);
 
     const rawAll: RawQuestion[] = [];
     if (openaiQuestions.status === 'fulfilled') rawAll.push(...openaiQuestions.value);
     if (anthropicQuestions.status === 'fulfilled') rawAll.push(...anthropicQuestions.value);
 
-    const deduped = deduplicateQuestions(rawAll);
+    // Deduplicate within batch AND against existing DB questions
+    const dedupedBatch = deduplicateQuestions(rawAll);
+    const deduped = dedupedBatch.filter(
+      (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
+    );
     const now = Date.now();
 
     const saved: RagQuestionRow[] = [];
