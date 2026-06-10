@@ -4,8 +4,7 @@ import type { Question } from '@/lib/types';
 import { useStore } from '@/lib/store';
 import { Card, Pill } from '@/components/ui';
 import { cn, formatTime } from '@/lib/utils';
-import { TOPIC_MAP } from '@/lib/topics';
-import { Timer, ArrowRight, ChevronDown, ChevronUp, WifiOff } from 'lucide-react';
+import { Timer, ArrowRight, ArrowLeft, BookmarkCheck, Bookmark, ChevronDown, ChevronUp, WifiOff } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_BASE ?? '';
 
@@ -18,18 +17,37 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
     } catch (e) {
       if (attempt === retries) throw e;
     }
-    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt)); // 500ms, 1s, 2s
+    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
   }
   throw new Error('unreachable');
 }
 
-const RW_SECS = 64 * 60;
-const MATH_SECS = 70 * 60;
-const BREAK_SECS = 5 * 60;
+// Real SAT Digital module timings
+const RW_MOD_SECS = 32 * 60;   // 32 min per R&W module
+const MATH_MOD_SECS = 35 * 60; // 35 min per Math module
+const BREAK_SECS = 10 * 60;    // 10-min break between sections
 
-type Phase = 'intro' | 'rw' | 'break' | 'math' | 'review';
+// Phase represents which of the 5 real screens the student is on
+type Phase = 'intro' | 'rw1' | 'rw-mod-break' | 'rw2' | 'break' | 'math1' | 'math-mod-break' | 'math2' | 'review';
 type ChoiceId = 'A' | 'B' | 'C' | 'D';
+
 interface AnswerRecord { selected: ChoiceId | null; timeSec: number; }
+
+// Persisted phase is coarser (back-compat with existing sessions)
+function storedPhaseToPhase(stored: string, rwIdx: number, mathIdx: number): Phase {
+  if (stored === 'rw') return rwIdx >= 27 ? 'rw2' : 'rw1';
+  if (stored === 'math') return mathIdx >= 22 ? 'math2' : 'math1';
+  if (stored === 'rw1' || stored === 'rw-mod-break' || stored === 'rw2' ||
+      stored === 'math1' || stored === 'math-mod-break' || stored === 'math2') return stored as Phase;
+  return stored as Phase;
+}
+
+function phaseToStored(phase: Phase): string {
+  // Collapse module phases to coarser for DB storage (back-compat)
+  if (phase === 'rw1' || phase === 'rw-mod-break' || phase === 'rw2') return 'rw';
+  if (phase === 'math1' || phase === 'math-mod-break' || phase === 'math2') return 'math';
+  return phase;
+}
 
 function estimateSection(correct: number, total: number): number {
   if (!total) return 200;
@@ -61,41 +79,54 @@ interface Props {
   questions: Question[];
   email?: string;
   date?: string;
-  /** Pass an existing in-progress session to resume it */
   session?: StoredSession | null;
 }
 
 export default function MockRunner({ questions, email, date, session }: Props) {
   const { recordAttempt, finishSession } = useStore();
 
+  // Split 54 R&W questions into Module 1 (0-26) and Module 2 (27-53)
   const rwQs = questions.filter((q) => q.section === 'Reading & Writing');
   const mathQs = questions.filter((q) => q.section === 'Math');
+  const rwMod1 = rwQs.slice(0, 27);
+  const rwMod2 = rwQs.slice(27);
+  const mathMod1 = mathQs.slice(0, 22);
+  const mathMod2 = mathQs.slice(22);
 
-  // Session persistence refs (stable across renders)
+  // Session persistence refs
   const sessionIdRef = useRef<string>(session?.id ?? newSessionId());
   const startedAtRef = useRef<number>(session?.started_at ?? Date.now());
   const rwStartedRef = useRef<number | null>(session?.rw_started_at ?? null);
   const mathStartedRef = useRef<number | null>(session?.math_started_at ?? null);
+  // Track per-module start times in memory (rw2 starts after mod-break, math2 same)
+  const rw2StartedRef = useRef<number | null>(null);
+  const math2StartedRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const pendingSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saveError, setSaveError] = useState(false);
 
-  // Restore state from session if resuming
-  const initPhase = (session?.phase ?? 'intro') as Phase;
+  const initPhase = storedPhaseToPhase(session?.phase ?? 'intro', session?.rw_idx ?? 0, session?.math_idx ?? 0);
   const initAnswers: Record<string, AnswerRecord> = (() => {
     try { return session ? JSON.parse(session.answers_json) : {}; } catch { return {}; }
   })();
 
-  const [phase, setPhase] = useState<Phase>(initPhase === 'review' ? 'review' : initPhase === 'intro' ? 'intro' : initPhase as Phase);
+  const [phase, setPhase] = useState<Phase>(initPhase);
+  // Within-module index (0-based within the current module)
   const [rwIdx, setRwIdx] = useState(session?.rw_idx ?? 0);
   const [mathIdx, setMathIdx] = useState(session?.math_idx ?? 0);
   const [answers, setAnswers] = useState<Record<string, AnswerRecord>>(initAnswers);
+  // Current selection before confirming navigation
   const [pending, setPending] = useState<ChoiceId | null>(null);
   const [timer, setTimer] = useState<number | null>(null);
   const [qStart, setQStart] = useState(Date.now());
+  // Questions marked for review within a module
+  const [markedIds, setMarkedIds] = useState<Set<string>>(new Set());
+  // Review panel open/closed
+  const [navOpen, setNavOpen] = useState(false);
+  // Post-test review expansion
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // ── Persist session to DB (with retry + error indicator) ──────────────────
+  // ── Save to DB ─────────────────────────────────────────────────────────────
   const saveSession = useCallback(async (updates: Partial<{
     status: string; phase: string; answers_json: string;
     rw_idx: number; math_idx: number;
@@ -115,7 +146,7 @@ export default function MockRunner({ questions, email, date, session }: Props) {
       math_started_at: mathStartedRef.current,
       questions_json: JSON.stringify(questions),
       answers_json: JSON.stringify(answers),
-      phase,
+      phase: phaseToStored(phase),
       rw_idx: rwIdx,
       math_idx: mathIdx,
       rw_correct: 0, rw_total: rwQs.length,
@@ -132,60 +163,79 @@ export default function MockRunner({ questions, email, date, session }: Props) {
     } catch (e) {
       console.warn('[MockRunner] save failed after retries', e);
       setSaveError(true);
-      // Clear the error indicator after 8s so it doesn't persist forever
       setTimeout(() => setSaveError(false), 8000);
     } finally {
       savingRef.current = false;
     }
   }, [email, date, questions, answers, phase, rwIdx, mathIdx, rwQs.length, mathQs.length]);
 
-  // ── Debounced per-answer save (fires 600ms after last answer) ──────────────
   const debouncedSave = useCallback((updates: Parameters<typeof saveSession>[0]) => {
     if (pendingSaveRef.current) clearTimeout(pendingSaveRef.current);
     pendingSaveRef.current = setTimeout(() => { void saveSession(updates); }, 600);
   }, [saveSession]);
 
-  // ── Section timer initialization ───────────────────────────────────────────
+  // ── Timer initialization per phase ────────────────────────────────────────
   useEffect(() => {
-    if (phase === 'rw') {
-      if (!rwStartedRef.current) rwStartedRef.current = Date.now();
-      const elapsed = (Date.now() - rwStartedRef.current) / 1000;
-      setTimer(Math.round(Math.max(60, RW_SECS - elapsed)));
-      setQStart(Date.now());
-    } else if (phase === 'math') {
+    const now = Date.now();
+    if (phase === 'rw1') {
+      if (!rwStartedRef.current) rwStartedRef.current = now;
+      const elapsed = (now - rwStartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, RW_MOD_SECS - elapsed)));
+      setQStart(now);
+    } else if (phase === 'rw2') {
+      if (!rw2StartedRef.current) rw2StartedRef.current = now;
+      const elapsed = (now - rw2StartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, RW_MOD_SECS - elapsed)));
+      setQStart(now);
+    } else if (phase === 'math1') {
       if (!mathStartedRef.current) {
-        mathStartedRef.current = Date.now();
+        mathStartedRef.current = now;
         void saveSession({ phase: 'math', math_started_at: mathStartedRef.current });
       }
-      const elapsed = (Date.now() - mathStartedRef.current) / 1000;
-      setTimer(Math.round(Math.max(60, MATH_SECS - elapsed)));
-      setQStart(Date.now());
-    } else if (phase === 'break') {
-      setTimer(BREAK_SECS);
+      const elapsed = (now - mathStartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, MATH_MOD_SECS - elapsed)));
+      setQStart(now);
+    } else if (phase === 'math2') {
+      if (!math2StartedRef.current) math2StartedRef.current = now;
+      const elapsed = (now - math2StartedRef.current) / 1000;
+      setTimer(Math.round(Math.max(60, MATH_MOD_SECS - elapsed)));
+      setQStart(now);
+    } else if (phase === 'break' || phase === 'rw-mod-break' || phase === 'math-mod-break') {
+      setTimer(phase === 'break' ? BREAK_SECS : 0);
     } else {
       setTimer(null);
     }
   }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Timer tick ────────────────────────────────────────────────────────────
+  // ── Timer tick ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (timer === null || timer <= 0) return;
     const t = setTimeout(() => setTimer((p) => (p !== null ? p - 1 : null)), 1000);
     return () => clearTimeout(t);
   }, [timer]);
 
-  // ── Timer expiry ──────────────────────────────────────────────────────────
+  // ── Timer expiry ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (timer !== 0) return;
-    if (phase === 'rw') {
-      rwQs.forEach((q) => {
+    if (phase === 'rw1') {
+      rwMod1.forEach((q) => {
+        if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
+      });
+      setPhase('rw-mod-break');
+    } else if (phase === 'rw2') {
+      rwMod2.forEach((q) => {
         if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
       });
       setPhase('break');
     } else if (phase === 'break') {
-      setPhase('math');
-    } else if (phase === 'math') {
-      mathQs.forEach((q) => {
+      setPhase('math1');
+    } else if (phase === 'math1') {
+      mathMod1.forEach((q) => {
+        if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
+      });
+      setPhase('math-mod-break');
+    } else if (phase === 'math2') {
+      mathMod2.forEach((q) => {
         if (!answers[q.id]) recordAttempt({ question: q, selected: null, timeSec: 60, confidence: 'medium', mode: 'mock' });
       });
       const newAnswers = { ...answers };
@@ -201,9 +251,46 @@ export default function MockRunner({ questions, email, date, session }: Props) {
     }
   }, [timer]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Answer & advance ───────────────────────────────────────────────────────
+  // ── Navigate to a specific question within the current module ─────────────
+  const goTo = useCallback((targetIdx: number) => {
+    // Save pending answer for current question before jumping
+    const isRw = phase === 'rw1' || phase === 'rw2';
+    const isMath = phase === 'math1' || phase === 'math2';
+    if (!isRw && !isMath) return;
+
+    const modQs = phase === 'rw1' ? rwMod1 : phase === 'rw2' ? rwMod2 : phase === 'math1' ? mathMod1 : mathMod2;
+    const curIdx = isRw ? rwIdx : mathIdx;
+    const curQ = modQs[curIdx];
+
+    if (curQ && pending !== null) {
+      const timeSec = (Date.now() - qStart) / 1000;
+      const newAnswers = { ...answers, [curQ.id]: { selected: pending, timeSec } };
+      setAnswers(newAnswers);
+      recordAttempt({ question: curQ, selected: pending, timeSec, confidence: 'medium', mode: 'mock' });
+      setPending(null);
+      setQStart(Date.now());
+      if (isRw) {
+        setRwIdx(targetIdx);
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), rw_idx: targetIdx });
+      } else {
+        setMathIdx(targetIdx);
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), math_idx: targetIdx });
+      }
+    } else {
+      if (isRw) setRwIdx(targetIdx);
+      else setMathIdx(targetIdx);
+      setPending(answers[modQs[targetIdx]?.id]?.selected ?? null);
+      setQStart(Date.now());
+    }
+    setNavOpen(false);
+  }, [phase, rwIdx, mathIdx, rwMod1, rwMod2, mathMod1, mathMod2, pending, answers, qStart, recordAttempt, debouncedSave]);
+
+  // ── Advance to next question or end module ─────────────────────────────────
   const advance = useCallback(() => {
-    const q = phase === 'rw' ? rwQs[rwIdx] : phase === 'math' ? mathQs[mathIdx] : null;
+    const isRw = phase === 'rw1' || phase === 'rw2';
+    const modQs = phase === 'rw1' ? rwMod1 : phase === 'rw2' ? rwMod2 : phase === 'math1' ? mathMod1 : mathMod2;
+    const curIdx = isRw ? rwIdx : mathIdx;
+    const q = modQs[curIdx];
     if (!q) return;
 
     const timeSec = (Date.now() - qStart) / 1000;
@@ -213,41 +300,53 @@ export default function MockRunner({ questions, email, date, session }: Props) {
     setPending(null);
     setQStart(Date.now());
 
-    if (phase === 'rw') {
-      const nextIdx = rwIdx + 1;
-      if (nextIdx >= rwQs.length) {
+    const nextIdx = curIdx + 1;
+
+    if (phase === 'rw1') {
+      if (nextIdx >= rwMod1.length) {
+        const rwC = rwMod1.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        void saveSession({ answers_json: JSON.stringify(newAnswers), phase: 'rw', rw_idx: nextIdx, rw_correct: rwC });
+        setPhase('rw-mod-break');
+      } else {
+        setRwIdx(nextIdx);
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), rw_idx: nextIdx });
+      }
+    } else if (phase === 'rw2') {
+      if (nextIdx >= rwMod2.length) {
         const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
-        // Section end — save immediately (no debounce)
-        void saveSession({
-          answers_json: JSON.stringify(newAnswers), phase: 'break', rw_idx: nextIdx,
-          rw_correct: rwC, rw_total: rwQs.length,
-        });
+        void saveSession({ answers_json: JSON.stringify(newAnswers), phase: 'rw', rw_idx: 27 + nextIdx, rw_correct: rwC });
         setPhase('break');
       } else {
         setRwIdx(nextIdx);
-        // Per-answer debounced save — no data lost on network blip
-        debouncedSave({ answers_json: JSON.stringify(newAnswers), rw_idx: nextIdx });
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), rw_idx: 27 + nextIdx });
       }
-    } else if (phase === 'math') {
-      const nextIdx = mathIdx + 1;
-      if (nextIdx >= mathQs.length) {
+    } else if (phase === 'math1') {
+      if (nextIdx >= mathMod1.length) {
+        const mathC = mathMod1.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
+        void saveSession({ answers_json: JSON.stringify(newAnswers), phase: 'math', math_idx: nextIdx, math_correct: mathC });
+        setPhase('math-mod-break');
+      } else {
+        setMathIdx(nextIdx);
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), math_idx: nextIdx });
+      }
+    } else if (phase === 'math2') {
+      if (nextIdx >= mathMod2.length) {
         const mathC = mathQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
         const rwC = rwQs.filter((q2) => newAnswers[q2.id]?.selected === q2.correct).length;
         finishSession('mock', 0);
-        // Completion — save immediately (no debounce)
         void saveSession({
           answers_json: JSON.stringify(newAnswers), status: 'complete', phase: 'review',
-          math_idx: nextIdx, math_correct: mathC, math_total: mathQs.length,
+          math_idx: 22 + nextIdx, math_correct: mathC, math_total: mathQs.length,
           rw_correct: rwC, rw_total: rwQs.length, completed_at: Date.now(),
         });
         setPhase('review');
       } else {
         setMathIdx(nextIdx);
-        // Per-answer debounced save
-        debouncedSave({ answers_json: JSON.stringify(newAnswers), math_idx: nextIdx });
+        debouncedSave({ answers_json: JSON.stringify(newAnswers), math_idx: 22 + nextIdx });
       }
     }
-  }, [phase, rwIdx, mathIdx, rwQs, mathQs, pending, answers, qStart, recordAttempt, finishSession, saveSession, debouncedSave]);
+  }, [phase, rwIdx, mathIdx, rwMod1, rwMod2, mathMod1, mathMod2, pending, answers, qStart,
+      rwQs, mathQs, recordAttempt, finishSession, saveSession, debouncedSave]);
 
   // ── INTRO ──────────────────────────────────────────────────────────────────
   if (phase === 'intro') {
@@ -262,27 +361,38 @@ export default function MockRunner({ questions, email, date, session }: Props) {
           <div className="rounded-3xl bg-gradient-to-br from-slate-900 to-slate-950 border border-brand-500/30 p-8 text-white shadow-2xl">
             <div className="text-center mb-6">
               <div className="text-5xl mb-3">📋</div>
-              <h2 className="font-display text-2xl font-extrabold">Full-Length SAT Simulation</h2>
-              <p className="text-white/60 mt-1 text-sm">Timed · Full-length · Scored like the real exam</p>
+              <h2 className="font-display text-2xl font-extrabold">Full-Length SAT Practice Test</h2>
+              <p className="text-white/60 mt-1 text-sm">4 modules · Timed · Scored like the real exam</p>
             </div>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              <div className="rounded-2xl bg-white/10 p-4 text-center">
-                <div className="font-display text-2xl font-bold">{rwQs.length}</div>
-                <div className="text-xs text-white/60 mt-0.5">Reading & Writing</div>
-                <div className="text-xs text-white/40 mt-0.5">64 min</div>
-              </div>
-              <div className="rounded-2xl bg-white/10 p-4 text-center">
-                <div className="font-display text-2xl font-bold">{mathQs.length}</div>
-                <div className="text-xs text-white/60 mt-0.5">Math</div>
-                <div className="text-xs text-white/40 mt-0.5">70 min</div>
-              </div>
+
+            {/* Module breakdown */}
+            <div className="space-y-2 mb-6">
+              {([
+                { label: 'Module 1', section: 'Reading & Writing', q: rwMod1.length, min: 32, color: 'from-blue-600/30 to-blue-500/20', border: 'border-blue-500/30' },
+                { label: 'Module 2', section: 'Reading & Writing', q: rwMod2.length, min: 32, color: 'from-blue-600/20 to-blue-500/10', border: 'border-blue-500/20' },
+                { label: 'Module 1', section: 'Math', q: mathMod1.length, min: 35, color: 'from-violet-600/30 to-violet-500/20', border: 'border-violet-500/30' },
+                { label: 'Module 2', section: 'Math', q: mathMod2.length, min: 35, color: 'from-violet-600/20 to-violet-500/10', border: 'border-violet-500/20' },
+              ]).map((m, i) => (
+                <div key={i} className={cn('flex items-center justify-between rounded-xl border px-4 py-2.5 bg-gradient-to-r', m.color, m.border)}>
+                  <div>
+                    <span className="text-xs font-bold uppercase tracking-wide text-white/50">{m.label}</span>
+                    <span className="ml-2 text-sm text-white/80">{m.section}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-bold">{m.q} Q</span>
+                    <span className="ml-2 text-xs text-white/50">{m.min} min</span>
+                  </div>
+                </div>
+              ))}
             </div>
+
             <div className="space-y-2 mb-6 text-sm">
               {([
-                ['📱', 'Put your phone on silent mode'],
-                ['⏱', 'Each section is timed — manage your time carefully'],
-                ['🚫', 'No feedback during the exam — just like the real SAT'],
-                ['📝', 'Full per-question analysis revealed at the end'],
+                ['📱', 'Put your phone on silent — 2 hours 14 minutes total'],
+                ['⏱', 'Each module has its own timer — manage time per module'],
+                ['🔀', 'You can move between questions within a module'],
+                ['🔖', 'Mark questions for review and return before submitting'],
+                ['🚫', 'No feedback during the exam — results revealed at the end'],
                 ['🔒', 'Progress is saved — you can resume if interrupted'],
               ] as [string, string][]).map(([icon, text]) => (
                 <div key={text} className="flex items-center gap-3 rounded-xl bg-white/8 px-4 py-2.5">
@@ -297,10 +407,10 @@ export default function MockRunner({ questions, email, date, session }: Props) {
                 startedAtRef.current = now;
                 rwStartedRef.current = now;
                 void saveSession({ status: 'in-progress', phase: 'rw', rw_started_at: now, started_at: now });
-                setPhase('rw');
+                setPhase('rw1');
               }}
             >
-              I'm Ready — Begin Exam →
+              Begin Exam — Section 1, Module 1 →
             </button>
             <a href="/app/mock" className="block text-center mt-3 text-sm text-white/40 hover:text-white/60 transition-colors">
               ← Back to mock hub
@@ -311,21 +421,68 @@ export default function MockRunner({ questions, email, date, session }: Props) {
     );
   }
 
-  // ── BREAK ──────────────────────────────────────────────────────────────────
+  // ── MODULE BREAK (within R&W or Math section) ─────────────────────────────
+  if (phase === 'rw-mod-break' || phase === 'math-mod-break') {
+    const isRwBreak = phase === 'rw-mod-break';
+    const mod1Qs = isRwBreak ? rwMod1 : mathMod1;
+    const mod1Correct = mod1Qs.filter((q) => answers[q.id]?.selected === q.correct).length;
+    return (
+      <div className="mx-auto max-w-md text-center py-16 space-y-6">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="text-6xl mb-4">✅</div>
+          <h2 className="font-display text-2xl font-bold">
+            {isRwBreak ? 'Reading & Writing' : 'Math'} — Module 1 Complete
+          </h2>
+          <p className="text-muted mt-1 text-sm">
+            {mod1Qs.length} questions answered · {mod1Correct} correct
+          </p>
+          <div className="mt-6 rounded-2xl bg-brand-500/10 border border-brand-500/20 p-4 text-sm text-muted">
+            <p className="font-semibold text-foreground mb-1">Starting Module 2</p>
+            <p>This module continues the same section. Your timer will reset to {isRwBreak ? '32' : '35'} minutes.</p>
+          </div>
+          <button
+            className="mt-6 btn-primary px-8 py-3.5 text-base"
+            onClick={() => {
+              const now = Date.now();
+              if (isRwBreak) {
+                rw2StartedRef.current = now;
+                setRwIdx(0);
+                setPhase('rw2');
+              } else {
+                math2StartedRef.current = now;
+                setMathIdx(0);
+                setPhase('math2');
+              }
+              setPending(null);
+            }}
+          >
+            Begin Module 2 <ArrowRight size={16} />
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // ── 10-MINUTE BREAK (between R&W and Math) ────────────────────────────────
   if (phase === 'break') {
     const rwCorrect = rwQs.filter((q) => answers[q.id]?.selected === q.correct).length;
     return (
       <div className="mx-auto max-w-md text-center py-16 space-y-6">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="text-6xl mb-4">✅</div>
-          <h2 className="font-display text-2xl font-bold">Reading & Writing — Done!</h2>
-          <p className="text-muted mt-1 text-sm">{rwQs.length} questions answered · {rwCorrect} correct</p>
+          <div className="text-6xl mb-4">☕</div>
+          <h2 className="font-display text-2xl font-bold">Section Break</h2>
+          <p className="text-muted mt-1 text-sm">Reading & Writing complete · {rwQs.length} questions · {rwCorrect} correct</p>
           {timer !== null && timer > 0 && (
             <p className="mt-4 text-sm text-muted">
-              Optional break: <span className="font-bold tabular-nums">{formatTime(timer)}</span> remaining
+              Break time: <span className="font-bold tabular-nums">{formatTime(timer)}</span> remaining
             </p>
           )}
-          <button className="mt-6 btn-primary px-8 py-3.5 text-base" onClick={() => setPhase('math')}>
+          <div className="mt-4 rounded-2xl bg-slate-100 dark:bg-slate-800 p-4 text-sm text-muted text-left space-y-1">
+            <p className="font-semibold text-foreground">Up next: Math Section</p>
+            <p>Module 1: 22 questions · 35 minutes</p>
+            <p>Module 2: 22 questions · 35 minutes</p>
+          </div>
+          <button className="mt-6 btn-primary px-8 py-3.5 text-base" onClick={() => setPhase('math1')}>
             Begin Math Section <ArrowRight size={16} />
           </button>
         </motion.div>
@@ -333,21 +490,24 @@ export default function MockRunner({ questions, email, date, session }: Props) {
     );
   }
 
-  // ── REVIEW ─────────────────────────────────────────────────────────────────
+  // ── REVIEW ──────────────────────────────────────────────────────────────────
   if (phase === 'review') {
     return <MockReview rwQs={rwQs} mathQs={mathQs} answers={answers} expandedId={expandedId} setExpandedId={setExpandedId} />;
   }
 
-  // ── ACTIVE TEST ─────────────────────────────────────────────────────────────
-  const isRw = phase === 'rw';
-  const sectionQs = isRw ? rwQs : mathQs;
-  const idx = isRw ? rwIdx : mathIdx;
-  const q = sectionQs[idx];
+  // ── ACTIVE TEST (rw1 | rw2 | math1 | math2) ───────────────────────────────
+  const isRw = phase === 'rw1' || phase === 'rw2';
+  const modNum = phase === 'rw1' || phase === 'math1' ? 1 : 2;
+  const sectionLabel = isRw ? 'Reading & Writing' : 'Math';
+  const modQs = phase === 'rw1' ? rwMod1 : phase === 'rw2' ? rwMod2 : phase === 'math1' ? mathMod1 : mathMod2;
+  const curIdx = isRw ? rwIdx : mathIdx;
+  const q = modQs[curIdx];
   if (!q) return null;
 
-  const isTimeLow = timer !== null && timer <= 10 * 60;
+  const isTimeLow = timer !== null && timer <= 5 * 60;
   const isTimeCritical = timer !== null && timer <= 2 * 60;
-  const sectionLabel = isRw ? 'Reading & Writing' : 'Math';
+  const isMarked = markedIds.has(q.id);
+  const answeredInMod = modQs.filter((mq) => answers[mq.id]?.selected).length;
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -357,36 +517,61 @@ export default function MockRunner({ questions, email, date, session }: Props) {
           <span>Progress save failed — retrying. Don't close this tab.</span>
         </div>
       )}
-      <div className="mb-5 flex items-center gap-4">
-        <div className="flex-1">
-          <div className="flex items-center justify-between text-xs text-muted mb-2">
-            <span className="font-bold uppercase tracking-wide">{sectionLabel}</span>
-            <span>{idx + 1} / {sectionQs.length}</span>
-          </div>
-          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-            <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-brand-500 to-accent-500"
-              animate={{ width: `${(idx / sectionQs.length) * 100}%` }}
-              transition={{ duration: 0.35 }}
-            />
-          </div>
+
+      {/* ── Header bar (mirrors real Bluebook layout) ─────────────────────── */}
+      <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--surface))] px-4 py-3">
+        <div className="flex flex-col">
+          <span className="text-xs font-bold uppercase tracking-widest text-muted">
+            Section 1{isRw ? '' : ' · Math'} — {sectionLabel}
+          </span>
+          <span className="text-sm font-semibold">Module {modNum} <span className="text-muted font-normal">· Question {curIdx + 1} of {modQs.length}</span></span>
         </div>
-        {timer !== null && (
-          <motion.span
-            className={cn(
-              'chip tabular-nums shrink-0 font-mono',
-              isTimeCritical ? 'bg-danger/15 text-danger border border-danger/25' :
-              isTimeLow ? 'bg-warning/15 text-warning border border-warning/25' :
-              'bg-slate-500/10 text-muted border border-[rgb(var(--border))]'
+
+        <div className="flex items-center gap-2">
+          {/* Mark for review */}
+          <button
+            onClick={() => setMarkedIds((s) => { const n = new Set(s); if (n.has(q.id)) n.delete(q.id); else n.add(q.id); return n; })}
+            className={cn('flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-colors',
+              isMarked
+                ? 'border-warning/40 bg-warning/10 text-warning'
+                : 'border-[rgb(var(--border))] text-muted hover:border-warning/30 hover:text-warning'
             )}
-            animate={isTimeCritical ? { scale: [1, 1.04, 1] } : {}}
-            transition={{ repeat: Infinity, duration: 1 }}
+            title="Mark for review"
           >
-            <Timer size={13} /> {formatTime(timer)}
-          </motion.span>
-        )}
+            {isMarked ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
+            <span className="hidden sm:inline">{isMarked ? 'Marked' : 'Mark'}</span>
+          </button>
+
+          {/* Timer */}
+          {timer !== null && (
+            <motion.span
+              className={cn(
+                'chip tabular-nums shrink-0 font-mono',
+                isTimeCritical ? 'bg-danger/15 text-danger border border-danger/25' :
+                isTimeLow ? 'bg-warning/15 text-warning border border-warning/25' :
+                'bg-slate-500/10 text-muted border border-[rgb(var(--border))]'
+              )}
+              animate={isTimeCritical ? { scale: [1, 1.04, 1] } : {}}
+              transition={{ repeat: Infinity, duration: 1 }}
+            >
+              <Timer size={13} /> {formatTime(timer)}
+            </motion.span>
+          )}
+        </div>
       </div>
 
+      {/* ── Progress bar ─────────────────────────────────────────────────────── */}
+      <div className="mb-4">
+        <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+          <motion.div
+            className="h-full rounded-full bg-gradient-to-r from-brand-500 to-accent-500"
+            animate={{ width: `${((curIdx + 1) / modQs.length) * 100}%` }}
+            transition={{ duration: 0.35 }}
+          />
+        </div>
+      </div>
+
+      {/* ── Question card ────────────────────────────────────────────────────── */}
       <AnimatePresence mode="wait">
         <motion.div
           key={q.id}
@@ -396,15 +581,11 @@ export default function MockRunner({ questions, email, date, session }: Props) {
           transition={{ duration: 0.22 }}
         >
           <Card>
-            <div className="flex flex-wrap items-center gap-2 mb-4">
-              <Pill tone="brand">{TOPIC_MAP[q.topic]?.name ?? q.topic}</Pill>
-              <Pill tone="muted">{q.subtopic}</Pill>
-              <Pill tone={q.difficulty === 'hard' ? 'danger' : q.difficulty === 'medium' ? 'warning' : 'success'}>{q.difficulty}</Pill>
-            </div>
+            {/* No difficulty/topic pills during exam — just like real SAT */}
             {q.passage && (
-              <div className="mb-5 rounded-2xl border-l-4 border-brand-400 bg-brand-500/5 p-4 text-sm leading-relaxed">{q.passage}</div>
+              <div className="mb-5 rounded-2xl border-l-4 border-brand-400 bg-brand-500/5 p-4 text-sm leading-relaxed text-foreground whitespace-pre-wrap">{q.passage}</div>
             )}
-            <p className="text-lg font-medium leading-relaxed mb-6">{q.prompt}</p>
+            <p className="text-base leading-relaxed mb-6 font-medium">{q.prompt}</p>
             <div className="space-y-2.5">
               {q.choices.map((c) => (
                 <motion.button
@@ -427,16 +608,24 @@ export default function MockRunner({ questions, email, date, session }: Props) {
                 </motion.button>
               ))}
             </div>
-            <div className="mt-5 flex items-center justify-between">
-              <p className="text-xs text-muted">No answer feedback until the full review</p>
+
+            {/* Navigation row */}
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <button
+                className="btn-ghost px-4 py-2.5 flex items-center gap-1.5 text-sm disabled:opacity-40"
+                onClick={() => goTo(curIdx - 1)}
+                disabled={curIdx === 0}
+              >
+                <ArrowLeft size={15} /> Back
+              </button>
+              <p className="text-xs text-muted text-center hidden sm:block">No feedback until results</p>
               <motion.button
-                className="btn-primary px-7 py-2.5"
+                className="btn-primary px-7 py-2.5 flex items-center gap-1.5"
                 onClick={advance}
-                disabled={pending === null}
                 whileTap={{ scale: 0.96 }}
               >
-                {idx + 1 >= sectionQs.length
-                  ? isRw ? 'End Section →' : 'Finish Exam →'
+                {curIdx + 1 >= modQs.length
+                  ? (phase === 'rw1' ? 'Next Module →' : phase === 'rw2' ? 'End Section →' : phase === 'math1' ? 'Next Module →' : 'Finish Exam →')
                   : 'Next →'}
               </motion.button>
             </div>
@@ -444,24 +633,65 @@ export default function MockRunner({ questions, email, date, session }: Props) {
         </motion.div>
       </AnimatePresence>
 
-      <div className="flex flex-wrap gap-1 mt-3 justify-center">
-        {sectionQs.map((sq, i) => (
-          <div key={sq.id} className={cn('h-1.5 rounded-full transition-all',
-            i < idx ? 'bg-brand-400 w-3' : i === idx ? 'bg-brand-500 w-4' : 'bg-slate-300 dark:bg-slate-700 w-1.5'
-          )} />
-        ))}
+      {/* ── Question navigator (collapsible, shows answered/marked status) ─── */}
+      <div className="mt-4 rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--surface))] overflow-hidden">
+        <button
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-brand-500/5 transition-colors"
+          onClick={() => setNavOpen((o) => !o)}
+        >
+          <span>Question Navigator <span className="text-muted font-normal">({answeredInMod}/{modQs.length} answered{markedIds.size > 0 ? ` · ${markedIds.size} marked` : ''})</span></span>
+          {navOpen ? <ChevronUp size={15} className="text-muted" /> : <ChevronDown size={15} className="text-muted" />}
+        </button>
+        <AnimatePresence>
+          {navOpen && (
+            <motion.div
+              initial={{ height: 0 }}
+              animate={{ height: 'auto' }}
+              exit={{ height: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="px-4 pb-4 grid grid-cols-9 sm:grid-cols-12 gap-1.5 pt-1">
+                {modQs.map((mq, i) => {
+                  const isAnswered = Boolean(answers[mq.id]?.selected);
+                  const isActiveQ = i === curIdx;
+                  const isMarkd = markedIds.has(mq.id);
+                  return (
+                    <button
+                      key={mq.id}
+                      onClick={() => goTo(i)}
+                      className={cn(
+                        'h-8 w-full rounded-lg text-xs font-bold border transition-all',
+                        isActiveQ ? 'border-brand-500 bg-brand-500 text-white' :
+                        isMarkd ? 'border-warning/60 bg-warning/15 text-warning' :
+                        isAnswered ? 'border-success/40 bg-success/10 text-success' :
+                        'border-[rgb(var(--border))] text-muted hover:border-brand-400'
+                      )}
+                    >
+                      {i + 1}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-4 px-4 pb-3 text-xs text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-success/20 border border-success/40" /> Answered</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded bg-warning/15 border border-warning/60" /> Marked</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded border border-[rgb(var(--border))]" /> Unanswered</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
 }
 
-// ── Shared review component (used by MockRunner and MockHistory) ──────────────
+// ── Shared review component ─────────────────────────────────────────────────
 export function MockReview({
   rwQs, mathQs, answers, expandedId, setExpandedId,
 }: {
   rwQs: Question[];
   mathQs: Question[];
-  answers: Record<string, AnswerRecord>;
+  answers: Record<string, { selected: ChoiceId | null; timeSec: number }>;
   expandedId: string | null;
   setExpandedId: (id: string | null) => void;
 }) {
@@ -478,7 +708,7 @@ export function MockReview({
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
         <div className="rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-accent-600 p-8 text-white text-center shadow-glow-lg">
           <div className="text-5xl mb-3">🎓</div>
-          <h2 className="font-display text-3xl font-extrabold">Mock Test Complete!</h2>
+          <h2 className="font-display text-3xl font-extrabold">Test Complete!</h2>
           <p className="text-white/60 text-sm mt-1">{totalCorrect} of {totalQ} correct</p>
           <div className="mt-6 flex items-center justify-center gap-6 sm:gap-12">
             <SectionScore label="Reading & Writing" score={rwScore} correct={rwCorrect} total={rwQs.length} />
@@ -494,20 +724,25 @@ export function MockReview({
         </div>
       </motion.div>
 
-      {(['Reading & Writing', 'Math'] as const).map((sec) => {
-        const sqs = sec === 'Reading & Writing' ? rwQs : mathQs;
-        if (!sqs.length) return null;
-        const sc = sqs.filter((q) => answers[q.id]?.selected === q.correct).length;
+      {/* Per-module breakdown */}
+      {([
+        { label: 'Reading & Writing — Module 1', qs: rwQs.slice(0, 27) },
+        { label: 'Reading & Writing — Module 2', qs: rwQs.slice(27) },
+        { label: 'Math — Module 1', qs: mathQs.slice(0, 22) },
+        { label: 'Math — Module 2', qs: mathQs.slice(22) },
+      ] as const).map(({ label, qs }) => {
+        if (!qs.length) return null;
+        const sc = qs.filter((q) => answers[q.id]?.selected === q.correct).length;
         return (
-          <div key={sec}>
+          <div key={label}>
             <div className="flex items-center gap-3 mb-3">
-              <h3 className="font-display font-bold text-lg">{sec}</h3>
-              <Pill tone={sc / sqs.length >= 0.7 ? 'success' : sc / sqs.length >= 0.5 ? 'warning' : 'danger'}>
-                {sc}/{sqs.length} correct
+              <h3 className="font-display font-bold text-lg">{label}</h3>
+              <Pill tone={sc / qs.length >= 0.7 ? 'success' : sc / qs.length >= 0.5 ? 'warning' : 'danger'}>
+                {sc}/{qs.length} correct
               </Pill>
             </div>
             <div className="space-y-2">
-              {sqs.map((q, i) => {
+              {qs.map((q, i) => {
                 const ans = answers[q.id];
                 const correct = ans?.selected === q.correct;
                 const isExp = expandedId === q.id;
@@ -530,7 +765,6 @@ export function MockReview({
                         <span className={cn('text-xs font-bold', correct ? 'text-success' : 'text-danger')}>
                           {ans?.selected ?? '—'}{!correct && ans?.selected ? ` → ${q.correct}` : ''}
                         </span>
-                        <Pill tone="muted" className="hidden sm:inline-flex text-[10px]">{q.difficulty}</Pill>
                         {ans?.timeSec ? <span className="text-xs text-muted tabular-nums">{Math.round(ans.timeSec)}s</span> : null}
                         {isExp ? <ChevronUp size={14} className="text-muted" /> : <ChevronDown size={14} className="text-muted" />}
                       </div>
@@ -546,7 +780,7 @@ export function MockReview({
                         >
                           <div className="border-t border-[rgb(var(--border))] px-4 py-4 space-y-3 text-sm">
                             {q.passage && (
-                              <div className="rounded-xl bg-brand-500/5 border-l-4 border-brand-400 p-3 text-sm leading-relaxed">{q.passage}</div>
+                              <div className="rounded-xl bg-brand-500/5 border-l-4 border-brand-400 p-3 text-sm leading-relaxed whitespace-pre-wrap">{q.passage}</div>
                             )}
                             <p className="font-medium leading-relaxed">{q.prompt}</p>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
