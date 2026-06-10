@@ -11,12 +11,11 @@ import { relativeDate } from '@/lib/utils';
 import {
   ClipboardCheck, Clock, ListChecks, Play, TrendingUp, History,
   Database, Trophy, ArrowLeft, Target, Rocket, CheckCircle2, Lock,
-  ShieldCheck, Loader2,
+  ShieldCheck,
 } from 'lucide-react';
 import type { Question } from '@/lib/types';
 import { computeTopicMastery } from '@/lib/adaptive';
 import { TOPICS } from '@/lib/topics';
-import { createNovelTestSession } from '@/lib/ragClient';
 import { buildEvalTest } from '@/lib/evaluation';
 
 export default function Evaluation() {
@@ -24,33 +23,12 @@ export default function Evaluation() {
   const user = useStore((s) => s.user);
   const remoteEnabled = useStore((s) => s.remoteEnabled);
   const [active, setActive] = useState<{ def: EvalTestDef; questions: Question[] } | null>(null);
-  const [loadingId, setLoadingId] = useState<number | null>(null);
   const [error, setError] = useState('');
 
-  const startEvaluation = async (def: EvalTestDef) => {
-    setLoadingId(def.id);
+  const startEvaluation = (def: EvalTestDef) => {
     setError('');
-    try {
-      let questions: Question[];
-      if (remoteEnabled && user?.email) {
-        try {
-          questions = await createNovelTestSession({
-            email: user.email, mode: def.mode, count: evalTestSize(def.id),
-            attempts, fallbackQuestions: buildEvalTest(def.id),
-          });
-        } catch {
-          questions = buildEvalTest(def.id);
-        }
-      } else {
-        questions = buildEvalTest(def.id);
-      }
-      if (!questions.length) questions = buildEvalTest(def.id);
-      setActive({ def, questions });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to create the evaluation');
-    } finally {
-      setLoadingId(null);
-    }
+    const questions = buildEvalTest(def.id);
+    setActive({ def, questions });
   };
 
   if (active) {
@@ -192,10 +170,9 @@ export default function Evaluation() {
                   <button
                     className="btn-primary w-full py-2.5"
                     onClick={() => void startEvaluation(def)}
-                    disabled={loadingId !== null}
                   >
-                    {loadingId === def.id ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-                    {loadingId === def.id ? 'Building novel evaluation…' : 'Start evaluation'}
+                    <Play size={16} />
+                    Start evaluation
                   </button>
                 )}
               </Card>
