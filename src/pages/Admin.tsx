@@ -1,19 +1,174 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { QUESTION_BANK } from '@/lib/questionBank';
 import { TOPICS, TOPIC_MAP } from '@/lib/topics';
 import { useStore } from '@/lib/store';
 import { Card, SectionTitle, Pill, Stat } from '@/components/ui';
 import type { Difficulty, Question, TopicId } from '@/lib/types';
-import { Database, Search, Eye, BarChart3, CheckCircle2, Settings, AlertTriangle, ChevronRight } from 'lucide-react';
+import { Database, Search, Eye, BarChart3, CheckCircle2, Settings, AlertTriangle, ChevronRight, Activity, RefreshCw } from 'lucide-react';
 import { computeWeaknessSignals } from '@/lib/weaknessAnalysis';
 import { STUDENT_EMAILS, displayName } from '@/lib/auth';
+
+const API = import.meta.env.VITE_API_BASE ?? '';
+
+interface HealthResult {
+  status: 'ok' | 'degraded';
+  latencyMs: number;
+  checks: Record<string, string>;
+  ts: string;
+}
+
+function HealthTab() {
+  const [result, setResult] = useState<HealthResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch(`${API}/api/health`);
+      const d = await r.json() as HealthResult;
+      setResult(d);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error — could not reach /api/health');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const statusIcon = (val: string) => {
+    if (val === 'ok' || val === 'set') return '✅';
+    if (val.startsWith('fail') || val === 'missing') return '❌';
+    return '⚠️';
+  };
+
+  const checkRows: Array<{ key: string; label: string; desc: string }> = [
+    { key: 'db',            label: 'Database ping',     desc: 'Turso libSQL SELECT 1' },
+    { key: 'schema',        label: 'Schema ready',      desc: 'attempts + mock_sessions + rag tables' },
+    { key: 'turso_url',     label: 'TURSO_DATABASE_URL',desc: 'Env var present' },
+    { key: 'openai_key',    label: 'OPENAI_API_KEY',    desc: 'Env var present' },
+    { key: 'anthropic_key', label: 'ANTHROPIC_API_KEY', desc: 'Env var present' },
+  ];
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <SectionTitle
+          title="System Health"
+          subtitle="Live check of DB connectivity, schema status, and environment variables."
+        />
+        <button
+          className="btn-primary flex items-center gap-2 text-sm py-2 px-4"
+          onClick={run}
+          disabled={loading}
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Checking…' : result ? 'Re-check' : 'Run Health Check'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="space-y-4">
+          {/* Overall status banner */}
+          <div className={`rounded-xl px-5 py-4 flex items-center justify-between ${
+            result.status === 'ok'
+              ? 'bg-success/10 border border-success/25'
+              : 'bg-danger/10 border border-danger/25'
+          }`}>
+            <div>
+              <div className={`font-bold text-lg ${result.status === 'ok' ? 'text-success' : 'text-danger'}`}>
+                {result.status === 'ok' ? '✅ All systems operational' : '❌ System degraded'}
+              </div>
+              <div className="text-xs text-muted mt-0.5">
+                Checked at {new Date(result.ts).toLocaleTimeString()} · {result.latencyMs}ms
+              </div>
+            </div>
+            <div className={`text-3xl font-black ${result.status === 'ok' ? 'text-success' : 'text-danger'}`}>
+              {result.status === 'ok' ? '100%' : 'FAIL'}
+            </div>
+          </div>
+
+          {/* Per-check table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase text-muted">
+                  <th className="pb-2 pr-4">Check</th>
+                  <th className="pb-2 pr-4">Description</th>
+                  <th className="pb-2 pr-4">Status</th>
+                  <th className="pb-2">Raw value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checkRows.map(({ key, label, desc }) => {
+                  const val = result.checks[key] ?? '—';
+                  return (
+                    <tr key={key} className="border-b border-[rgb(var(--border))]/50">
+                      <td className="py-3 pr-4 font-medium">{label}</td>
+                      <td className="py-3 pr-4 text-muted text-xs">{desc}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          val === 'ok' || val === 'set'
+                            ? 'bg-success/15 text-success'
+                            : val === 'missing' || val.startsWith('fail')
+                            ? 'bg-danger/15 text-danger'
+                            : 'bg-warning/15 text-warning'
+                        }`}>
+                          {statusIcon(val)} {val === 'ok' || val === 'set' ? 'Pass' : 'Fail'}
+                        </span>
+                      </td>
+                      <td className="py-3 font-mono text-xs text-muted">{val}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Action hints for failures */}
+          {result.status !== 'ok' && (
+            <div className="rounded-xl border border-warning/25 bg-warning/5 px-4 py-3 space-y-1">
+              <div className="text-sm font-semibold text-warning">Remediation hints</div>
+              {result.checks.db?.startsWith('fail') && (
+                <p className="text-xs text-muted">• DB: Check TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel environment variables.</p>
+              )}
+              {result.checks.openai_key === 'missing' && (
+                <p className="text-xs text-muted">• OPENAI_API_KEY missing — question generation and embeddings will fail.</p>
+              )}
+              {result.checks.anthropic_key === 'missing' && (
+                <p className="text-xs text-muted">• ANTHROPIC_API_KEY missing — Claude-generated questions will be skipped.</p>
+              )}
+              {result.checks.schema?.startsWith('fail') && (
+                <p className="text-xs text-muted">• Schema creation failed — likely a DB connectivity issue (fix DB first).</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!result && !loading && (
+        <div className="text-center py-12 text-muted">
+          <Activity size={32} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Click "Run Health Check" to verify all systems.</p>
+          <p className="text-xs mt-1 opacity-60">Checks DB, schema tables, and API key env vars live.</p>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 export default function Admin() {
   const { attempts, mockSettings, setMockSettings, profiles } = useStore();
   const [search, setSearch] = useState('');
   const [topic, setTopic] = useState<string>('all');
   const [preview, setPreview] = useState<Question | null>(null);
-  const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses'>('questions');
+  const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses' | 'health'>('questions');
 
   const filtered = useMemo(
     () =>
@@ -68,8 +223,8 @@ export default function Admin() {
       </div>
 
       {/* Tab navigation */}
-      <div className="flex gap-2 border-b border-[rgb(var(--border))]">
-        {(['questions', 'mock-settings', 'weaknesses'] as const).map((tab) => (
+      <div className="flex flex-wrap gap-2 border-b border-[rgb(var(--border))]">
+        {(['questions', 'mock-settings', 'weaknesses', 'health'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -81,10 +236,13 @@ export default function Admin() {
           >
             {tab === 'questions' ? <><Database size={14} className="inline mr-1" />Question Bank</> :
              tab === 'mock-settings' ? <><Settings size={14} className="inline mr-1" />Mock Settings</> :
+             tab === 'health' ? <><Activity size={14} className="inline mr-1" />System Health</> :
              <><AlertTriangle size={14} className="inline mr-1" />Weakness Report</>}
           </button>
         ))}
       </div>
+
+      {activeTab === 'health' && <HealthTab />}
 
       {activeTab === 'mock-settings' && (
         <Card>

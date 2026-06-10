@@ -342,6 +342,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
+    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY env var is not set');
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY env var is not set');
+
     await ensureRagSchema();
     await ensureNoveltySchema();
 
