@@ -270,18 +270,28 @@ export async function upsertMockSession(s: MockSessionRow): Promise<void> {
 
 export async function getMockSession(userEmail: string, dateOrId: string): Promise<MockSessionRow | null> {
   const db = getClient();
-  // Try as date first, then as id
-  const byDate = await db.execute({
-    sql: `SELECT * FROM mock_sessions WHERE user_email=? AND date=? LIMIT 1`,
-    args: [userEmail.toLowerCase(), dateOrId],
-  });
-  if (byDate.rows.length) return rowToMockSession(byDate.rows[0] as Record<string, unknown>);
+  // Try as id first (exact), then as date (returns latest for that date)
   const byId = await db.execute({
     sql: `SELECT * FROM mock_sessions WHERE id=? LIMIT 1`,
     args: [dateOrId],
   });
   if (byId.rows.length) return rowToMockSession(byId.rows[0] as Record<string, unknown>);
+  const byDate = await db.execute({
+    sql: `SELECT * FROM mock_sessions WHERE user_email=? AND date=? ORDER BY started_at DESC LIMIT 1`,
+    args: [userEmail.toLowerCase(), dateOrId],
+  });
+  if (byDate.rows.length) return rowToMockSession(byDate.rows[0] as Record<string, unknown>);
   return null;
+}
+
+/** Returns ALL sessions for a specific date (for multi-attempt support), newest first. */
+export async function listMockSessionsByDate(userEmail: string, date: string): Promise<MockSessionRow[]> {
+  const db = getClient();
+  const result = await db.execute({
+    sql: `SELECT * FROM mock_sessions WHERE user_email=? AND date=? ORDER BY started_at DESC`,
+    args: [userEmail.toLowerCase(), date],
+  });
+  return result.rows.map((r) => rowToMockSession(r as Record<string, unknown>));
 }
 
 /** Returns sessions sorted newest first — questions_json omitted to keep payload small. */

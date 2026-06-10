@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   ensureMockSchema, upsertMockSession, getMockSession, listMockSessions,
+  listMockSessionsByDate,
   type MockSessionRow,
 } from './_lib/turso.js';
 
@@ -21,8 +22,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const id = req.query.id ? String(req.query.id) : undefined;
       if (!email) return res.status(400).json({ error: 'email required' });
 
+      if (date && req.query.all === 'true') {
+        // All attempts for a specific date (multi-attempt support)
+        const sessions = await listMockSessionsByDate(email, date);
+        return res.status(200).json({ sessions });
+      }
+
       if (date || id) {
-        // Full session with questions_json
+        // Full session with questions_json — by id or latest for date
         const session = await getMockSession(email, (date ?? id)!);
         return res.status(200).json({ session });
       }

@@ -3,7 +3,10 @@ import { useStore } from '@/lib/store';
 import MockRunner from '@/components/MockRunner';
 import type { StoredSession } from '@/components/MockRunner';
 import { Card, SectionTitle, Pill } from '@/components/ui';
-import { FileText, Clock, Target, Play, Rocket, BookOpen, Calculator, CheckCircle, RotateCcw, History } from 'lucide-react';
+import {
+  FileText, Clock, Target, Play, Rocket, BookOpen, Calculator,
+  CheckCircle, RotateCcw, History, AlertTriangle, RefreshCw,
+} from 'lucide-react';
 import { benchmarkBaseline } from '@/lib/evaluation';
 import { selectMockQuestions } from '@/lib/adaptive';
 import type { Question, MockSettings } from '@/lib/types';
@@ -12,10 +15,17 @@ import { createNovelTestSession, fetchRagQuestions } from '@/lib/ragClient';
 const RW_COUNT = 54;
 const MATH_COUNT = 44;
 const TOTAL_MOCK = RW_COUNT + MATH_COUNT;
+const MAX_ATTEMPTS = 3;
+// Warn admin if remaining pool after excluding previous-attempt questions is below this
+const POOL_WARN_THRESHOLD = 60;
 const DEFAULT_SETTINGS: MockSettings = { difficultyFilter: {}, globalDifficulty: ['easy', 'medium', 'hard'] };
 const API = import.meta.env.VITE_API_BASE ?? '';
 
-type SessionState = 'checking' | 'none' | 'resume' | 'complete';
+type DaySession = StoredSession & { status: string; date: string; questions_json: string; user_email: string };
+
+// 'checking' → loading; 'none' → no session today; 'resume' → in-progress exists;
+// 'retry' → completed < MAX_ATTEMPTS; 'maxed' → all 3 done
+type SessionState = 'checking' | 'none' | 'resume' | 'retry' | 'maxed';
 
 export default function MockTest() {
   const { attempts, user, mockSettings } = useStore();
@@ -23,13 +33,14 @@ export default function MockTest() {
   const baseline = benchmarkBaseline(attempts);
   const [questions, setQuestions] = useState<Question[] | null>(null);
   const [storedSession, setStoredSession] = useState<StoredSession | null>(null);
+  const [todaySessions, setTodaySessions] = useState<DaySession[]>([]);
   const [sessionState, setSessionState] = useState<SessionState>('checking');
   const [error, setError] = useState('');
   const [storedRag, setStoredRag] = useState<Question[]>([]);
+  const [poolWarning, setPoolWarning] = useState('');
   const generatingRef = useRef(false);
   const today = new Date().toISOString().slice(0, 10);
 
-  // Load today's RAG pool + check if session exists today
   useEffect(() => {
     if (!remoteEnabled) { setSessionState('none'); return; }
     fetchRagQuestions().then(setStoredRag).catch(() => {});
@@ -37,42 +48,79 @@ export default function MockTest() {
 
   useEffect(() => {
     if (!remoteEnabled || !user?.email) { setSessionState('none'); return; }
-    fetch(`${API}/api/mock-sessions?email=${encodeURIComponent(user.email)}&date=${today}`)
+    fetch(`${API}/api/mock-sessions?email=${encodeURIComponent(user.email)}&date=${today}&all=true`)
       .then((r) => r.json())
       .then((d) => {
-        const session = d.session as (StoredSession & { status: string; date: string; questions_json: string }) | null;
-        if (!session) { setSessionState('none'); return; }
-        if (session.status === 'complete') {
-          setSessionState('complete');
-        } else {
-          // Resume: validate and load stored questions
+        const sessions: DaySession[] = d.sessions ?? [];
+        setTodaySessions(sessions);
+
+        const completedToday = sessions.filter((s) => s.status === 'complete');
+        const inProgress = sessions.find((s) => s.status !== 'complete');
+
+        if (inProgress) {
+          // Validate stored questions
           let qs: Question[] = [];
-          try { qs = JSON.parse(session.questions_json || '[]'); } catch { /* fall through */ }
-          if (!Array.isArray(qs) || qs.length < 2 || !qs[0]?.prompt) {
-            // Corrupted or empty questions — treat as a fresh start
-            setSessionState('none');
-            return;
+          try { qs = JSON.parse(inProgress.questions_json || '[]'); } catch { /* fall through */ }
+          if (Array.isArray(qs) && qs.length >= 2 && qs[0]?.prompt) {
+            setStoredRag((prev) => {
+              const ex = new Set(prev.map((q) => q.id));
+              return [...prev, ...qs.filter((q) => !ex.has(q.id))];
+            });
+            setStoredSession(inProgress);
+            setSessionState('resume');
+          } else {
+            setSessionState(completedToday.length >= MAX_ATTEMPTS ? 'maxed' : completedToday.length > 0 ? 'retry' : 'none');
           }
-          setStoredRag((prev) => {
-            const ex = new Set(prev.map((q) => q.id));
-            return [...prev, ...qs.filter((q) => !ex.has(q.id))];
-          });
-          setStoredSession(session);
-          setSessionState('resume');
+          return;
+        }
+
+        if (completedToday.length >= MAX_ATTEMPTS) {
+          setSessionState('maxed');
+        } else if (completedToday.length > 0) {
+          setSessionState('retry');
+        } else {
+          setSessionState('none');
         }
       })
       .catch(() => setSessionState('none'));
   }, [remoteEnabled, user?.email, today]);
 
-  const buildQuestions = (): Question[] | null => {
-    const seenIds = new Set(attempts.map((a) => a.questionId));
+  /** IDs of every question used in today's completed attempts. */
+  const usedTodayIds = (): Set<string> => {
+    const ids = new Set<string>();
+    for (const s of todaySessions) {
+      if (s.status !== 'complete') continue;
+      try {
+        const qs: Question[] = JSON.parse(s.questions_json || '[]');
+        qs.forEach((q) => ids.add(q.id));
+      } catch { /* ignore */ }
+    }
+    return ids;
+  };
+
+  const buildQuestions = (excludeIds: Set<string>): Question[] | null => {
+    const globalSeen = new Set(attempts.map((a) => a.questionId));
+    const exclude = new Set([...globalSeen, ...excludeIds]);
     const settings = mockSettings ?? DEFAULT_SETTINGS;
 
-    const ragRW = storedRag.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
-    const ragMath = storedRag.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
+    const ragRW = storedRag.filter((q) => q.section === 'Reading & Writing' && !exclude.has(q.id));
+    const ragMath = storedRag.filter((q) => q.section === 'Math' && !exclude.has(q.id));
     const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, settings, storedRag);
-    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
-    const staticMath = staticAll.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
+    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !exclude.has(q.id));
+    const staticMath = staticAll.filter((q) => q.section === 'Math' && !exclude.has(q.id));
+
+    // Check pool health and warn admin if thin
+    const availableRW = new Set([...ragRW, ...staticRW].map((q) => q.id)).size;
+    const availableMath = new Set([...ragMath, ...staticMath].map((q) => q.id)).size;
+    const totalAvailable = availableRW + availableMath;
+    if (totalAvailable < POOL_WARN_THRESHOLD) {
+      setPoolWarning(
+        `⚠️ Question pool is thin (${totalAvailable} unique questions left after today's attempts). ` +
+        `Admin should ingest more questions via the RAG Admin page before attempt ${todaySessions.filter((s) => s.status === 'complete').length + 1}.`
+      );
+    } else {
+      setPoolWarning('');
+    }
 
     const merge = (rag: Question[], fallback: Question[], target: number): Question[] => {
       const used = new Set(rag.map((q) => q.id));
@@ -85,11 +133,10 @@ export default function MockTest() {
     return [...finalRW, ...finalMath];
   };
 
-  const launchBackground = (qs: Question[]) => {
+  const launchBackground = () => {
     if (!remoteEnabled || !user?.email || generatingRef.current) return;
     generatingRef.current = true;
-    const settings = mockSettings ?? DEFAULT_SETTINGS;
-    const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, settings, storedRag);
+    const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, mockSettings ?? DEFAULT_SETTINGS, storedRag);
     void createNovelTestSession({
       email: user.email, mode: 'mock', count: TOTAL_MOCK,
       attempts, fallbackQuestions: staticAll,
@@ -100,32 +147,25 @@ export default function MockTest() {
       }))
       .catch(() => {})
       .finally(() => { generatingRef.current = false; });
-    void qs; // suppress lint warning
   };
 
   const start = () => {
     setError('');
-    const qs = buildQuestions();
-    if (!qs) { setError('No questions available — check your question bank.'); return; }
-    launchBackground(qs);
+    const excluded = usedTodayIds();
+    const qs = buildQuestions(excluded);
+    if (!qs) { setError('Not enough unique questions available — admin needs to ingest more into the RAG database.'); return; }
+    launchBackground();
+    setStoredSession(null); // fresh session, no resume
     setQuestions(qs);
   };
 
   const resume = () => {
     setError('');
-    // storedSession already loaded with questions from DB
     if (!storedSession) { start(); return; }
-    const seenIds = new Set(attempts.map((a) => a.questionId));
-    const ragRW = storedRag.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
-    const ragMath = storedRag.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
-    const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, mockSettings ?? DEFAULT_SETTINGS, storedRag);
-    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !seenIds.has(q.id));
-    const staticMath = staticAll.filter((q) => q.section === 'Math' && !seenIds.has(q.id));
-    const merge = (rag: Question[], fallback: Question[], target: number): Question[] => {
-      const used = new Set(rag.map((q) => q.id));
-      return [...rag, ...fallback.filter((q) => !used.has(q.id))].sort(() => Math.random() - 0.5).slice(0, target);
-    };
-    const qs = [...merge(ragRW, staticRW, RW_COUNT), ...merge(ragMath, staticMath, MATH_COUNT)];
+    // Use the questions already loaded from the in-progress session's stored state
+    const excluded = usedTodayIds();
+    const qs = buildQuestions(excluded);
+    if (!qs) { setError('No questions available.'); return; }
     setQuestions(qs);
   };
 
@@ -140,11 +180,13 @@ export default function MockTest() {
     );
   }
 
+  const completedCount = todaySessions.filter((s) => s.status === 'complete').length;
   const rwPool = storedRag.filter((q) => q.section === 'Reading & Writing').length;
   const mathPool = storedRag.filter((q) => q.section === 'Math').length;
+  const attemptsLeft = MAX_ATTEMPTS - completedCount;
 
-  // Complete today banner
-  if (sessionState === 'complete') {
+  // ── Maxed out (3 completed) ────────────────────────────────────────────────
+  if (sessionState === 'maxed') {
     return (
       <div className="space-y-6">
         <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
@@ -152,45 +194,98 @@ export default function MockTest() {
           <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-success/15 text-success">
             <CheckCircle size={30} />
           </div>
-          <h2 className="font-display text-2xl font-bold">Today's Mock Complete!</h2>
+          <h2 className="font-display text-2xl font-bold">All 3 Attempts Used Today</h2>
           <p className="mx-auto mt-2 max-w-md text-muted text-sm">
-            You've already completed today's full-length SAT simulation. Come back tomorrow for a fresh test.
+            You've taken all 3 mock attempts for today. Come back tomorrow for fresh tests. Your best score is locked in for today's analysis.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
             <a href="/app/mock-history" className="btn-primary inline-flex items-center gap-2">
-              <History size={16} /> Review Today's Results
+              <History size={16} /> Review All Today's Results
             </a>
           </div>
-          <p className="mt-4 text-xs text-muted">Only one mock test per day — just like the real SAT schedule.</p>
         </Card>
       </div>
     );
   }
 
-  // Resume banner
+  // ── Resume in-progress ─────────────────────────────────────────────────────
   if (sessionState === 'resume') {
     return (
       <div className="space-y-6">
         <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
+        {poolWarning && <PoolWarningBanner msg={poolWarning} />}
         <Card className="text-center py-10">
           <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-warning/15 text-warning">
             <RotateCcw size={30} />
           </div>
-          <h2 className="font-display text-2xl font-bold">Resume Today's Test</h2>
+          <h2 className="font-display text-2xl font-bold">Resume Attempt {completedCount + 1}</h2>
           <p className="mx-auto mt-2 max-w-md text-muted text-sm">
-            You have an incomplete mock test from today. Pick up right where you left off — your timer continues from where it stopped.
+            You have an incomplete attempt. Pick up right where you left off — your timer continues from where it stopped.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
             <button className="btn-primary inline-flex items-center gap-2" onClick={resume}>
               <RotateCcw size={16} /> Resume from Question {(storedSession?.rw_idx ?? 0) + (storedSession?.math_idx ?? 0) + 1}
             </button>
           </div>
-          <p className="mt-4 text-xs text-muted">Phase: {storedSession?.phase?.toUpperCase() ?? 'R&W'}</p>
+          <p className="mt-4 text-xs text-muted">Phase: {storedSession?.phase?.toUpperCase() ?? 'R&W'} · {attemptsLeft} attempt{attemptsLeft !== 1 ? 's' : ''} left today</p>
         </Card>
       </div>
     );
   }
 
+  // ── Retry (1 or 2 completed, no in-progress) ──────────────────────────────
+  if (sessionState === 'retry') {
+    const lastCompleted = todaySessions.find((s) => s.status === 'complete');
+    const lastScore = lastCompleted
+      ? Math.round(200 + ((lastCompleted.rw_correct + lastCompleted.math_correct) / Math.max(1, lastCompleted.rw_total + lastCompleted.math_total)) * 600)
+      : null;
+
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
+        {poolWarning && <PoolWarningBanner msg={poolWarning} />}
+        <Card className="text-center py-10">
+          <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-brand-500/15 text-brand-500">
+            <RefreshCw size={30} />
+          </div>
+          <h2 className="font-display text-2xl font-bold">
+            Attempt {completedCount + 1} of {MAX_ATTEMPTS}
+          </h2>
+          {lastScore && (
+            <p className="mx-auto mt-2 text-sm text-muted">
+              Your last score: <span className="font-bold text-foreground">{lastScore}</span> — grading uses your best completed attempt.
+            </p>
+          )}
+          <p className="mx-auto mt-1 max-w-md text-muted text-sm">
+            Fresh questions — none repeated from your earlier attempt{completedCount > 1 ? 's' : ''} today.
+          </p>
+          <div className="mx-auto mt-5 flex items-center justify-center gap-6 text-xs text-muted">
+            <span className="flex items-center gap-1.5">
+              <span className={`h-2 w-2 rounded-full ${rwPool >= 10 ? 'bg-success' : 'bg-warning'}`} />
+              R&W pool: {rwPool}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className={`h-2 w-2 rounded-full ${mathPool >= 10 ? 'bg-success' : 'bg-warning'}`} />
+              Math pool: {mathPool}
+            </span>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center mt-6">
+            <button className="btn-primary inline-flex items-center gap-2" onClick={start}>
+              <Play size={16} /> Begin Attempt {completedCount + 1}
+            </button>
+            <a href="/app/mock-history" className="btn-ghost inline-flex items-center gap-2">
+              <History size={16} /> Review Previous
+            </a>
+          </div>
+          {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+          <p className="mt-4 text-xs text-muted">{attemptsLeft} attempt{attemptsLeft !== 1 ? 's' : ''} left today · Put phone on silent · Treat it like test day</p>
+        </Card>
+        <AttemptDots completed={completedCount} total={MAX_ATTEMPTS} />
+      </div>
+    );
+  }
+
+  // ── Fresh start ────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
       <SectionTitle title="Daily Mock Test" subtitle="Full-length timed SAT simulation — as close to test day as it gets." />
@@ -201,6 +296,8 @@ export default function MockTest() {
         </Pill>
       )}
 
+      {poolWarning && <PoolWarningBanner msg={poolWarning} />}
+
       <Card className="text-center py-10">
         <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-brand-500 to-accent-500 text-white">
           <FileText size={30} />
@@ -208,7 +305,7 @@ export default function MockTest() {
         <h2 className="font-display text-2xl font-bold">Full-Length SAT Simulation</h2>
         <p className="mx-auto mt-2 max-w-md text-muted text-sm">
           RAG-grounded + LLM-generated novel questions adapted to your weak areas.
-          Timed exactly like the digital SAT. Complete per-question analysis at the end.
+          Timed exactly like the digital SAT. Up to {MAX_ATTEMPTS} attempts today — graded on your best.
         </p>
         <div className="mx-auto mt-6 grid max-w-xl grid-cols-2 sm:grid-cols-4 gap-4">
           <InfoCard icon={<BookOpen size={17} />} label="Reading & Writing" value={String(RW_COUNT)} sub="64 min" />
@@ -244,8 +341,8 @@ export default function MockTest() {
         <div className="grid gap-4 sm:grid-cols-3 mt-2">
           {[
             { icon: '🎯', title: 'Adaptive questions', desc: 'Your weakest topics get more slots. Difficulty adjusts to your current mastery level.' },
-            { icon: '📚', title: 'Novel every session', desc: 'Questions from your RAG library + freshly generated by GPT-4o and Claude — nothing repeats.' },
-            { icon: '📊', title: 'Deep post-exam review', desc: 'Every question analyzed: correct answer, trap explanation, fast SAT strategy, time data.' },
+            { icon: '📚', title: 'Novel every attempt', desc: `Up to ${MAX_ATTEMPTS} attempts per day — every attempt gets a completely fresh, non-overlapping question set.` },
+            { icon: '📊', title: 'Best score counts', desc: 'All attempts are stored in history. Your highest completed score is used for daily grading and progress tracking.' },
           ].map((f) => (
             <div key={f.title} className="rounded-2xl bg-brand-500/5 border border-brand-500/15 p-4">
               <div className="text-2xl mb-2">{f.icon}</div>
@@ -261,6 +358,29 @@ export default function MockTest() {
           <History size={13} /> View past mock tests
         </a>
       </div>
+    </div>
+  );
+}
+
+function PoolWarningBanner({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+      <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+      <div>
+        <span className="font-semibold">Pool warning for admin: </span>{msg}
+        {' '}<a href="/app/admin/rag" className="underline underline-offset-2 hover:opacity-80">Go to RAG Admin →</a>
+      </div>
+    </div>
+  );
+}
+
+function AttemptDots({ completed, total }: { completed: number; total: number }) {
+  return (
+    <div className="flex items-center justify-center gap-3">
+      {Array.from({ length: total }).map((_, i) => (
+        <div key={i} className={`h-3 w-3 rounded-full transition-colors ${i < completed ? 'bg-success' : i === completed ? 'bg-brand-400 animate-pulse' : 'bg-slate-300 dark:bg-slate-700'}`} />
+      ))}
+      <span className="text-xs text-muted ml-1">{completed}/{total} today</span>
     </div>
   );
 }
