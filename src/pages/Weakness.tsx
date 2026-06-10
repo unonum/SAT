@@ -1,12 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '@/lib/store';
-import { computeAllMastery } from '@/lib/adaptive';
+import { computeAllMastery, selectAdaptiveQuestions } from '@/lib/adaptive';
 import { TOPIC_MAP, TOPICS } from '@/lib/topics';
 import { MISTAKE_LABELS } from '@/lib/tutor';
 import QuestionRunner from '@/components/QuestionRunner';
 import { Card, SectionTitle, Pill, MasteryBar, EmptyState } from '@/components/ui';
 import { masteryColor, masteryLabel, formatTime } from '@/lib/utils';
-import type { Difficulty, MistakeCategory, Question } from '@/lib/types';
+import type { Difficulty, MistakeCategory, Question, TopicId } from '@/lib/types';
 import {
   Radar,
   RadarChart,
@@ -20,19 +20,32 @@ import {
   Tooltip,
   Cell,
 } from 'recharts';
-import { Target, Clock, Wrench, Loader2 } from 'lucide-react';
-import { createNovelTestSession } from '@/lib/ragClient';
-import { QUESTION_BANK } from '@/lib/questionBank';
+import { Target, Clock, Wrench } from 'lucide-react';
+import { createNovelTestSession, fetchRagQuestions } from '@/lib/ragClient';
 
 export default function Weakness() {
   const { attempts, user } = useStore();
+  const remoteEnabled = useStore((s) => s.remoteEnabled);
   const mastery = useMemo(() => computeAllMastery(attempts), [attempts]);
   const [repair, setRepair] = useState<Question[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Pre-load stored RAG questions silently on mount
+  const [storedRag, setStoredRag] = useState<Question[]>([]);
+  const generatingRef = useRef(false);
+
+  const weakTopics = useMemo(
+    () => [...mastery].sort((a, b) => a.mastery - b.mastery).slice(0, 3).map((m) => m.topic),
+    [mastery]
+  );
+
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    fetchRagQuestions().then(setStoredRag).catch(() => {});
+  }, [remoteEnabled]);
+
   if (repair) {
-    return <QuestionRunner questions={repair} mode="weakness-repair" title="Weakness Repair Mode" />;
+    return <QuestionRunner questions={repair} mode="weakness-repair" title="Weakness Repair Mode" returnTo="/app/weakness" />;
   }
 
   if (attempts.length === 0) {
@@ -57,20 +70,41 @@ export default function Weakness() {
     .map(([k, v]) => ({ label: MISTAKE_LABELS[k as MistakeCategory], count: v }))
     .sort((a, b) => b.count - a.count);
 
-  const startRepair = async () => {
-    setLoading(true);
+  const startRepair = () => {
     setError('');
-    try {
-      const topics = [...mastery].sort((a, b) => a.mastery - b.mastery).slice(0, 3).map((item) => item.topic);
-      const questions = await createNovelTestSession({
-        email: user?.email ?? '', mode: 'weakness-repair', count: 8, topics,
-        attempts, fallbackQuestions: QUESTION_BANK,
-      });
-      setRepair(questions);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to create repair questions');
-    } finally {
-      setLoading(false);
+    const seenIds = new Set(attempts.map((a) => a.questionId));
+
+    // 1. Pick unseen RAG questions from weakest topics (in memory — instant)
+    const ragPool = storedRag.filter(
+      (q) => !seenIds.has(q.id) && weakTopics.includes(q.topic as TopicId)
+    );
+    const fallback = selectAdaptiveQuestions(attempts, 8, { topics: weakTopics, mode: 'weakness' });
+
+    let questions: Question[];
+    if (ragPool.length >= 8) {
+      questions = ragPool.sort(() => Math.random() - 0.5).slice(0, 8);
+    } else if (ragPool.length > 0) {
+      const fill = fallback.filter((q) => !ragPool.some((r) => r.id === q.id));
+      questions = [...ragPool, ...fill].slice(0, 8);
+    } else {
+      questions = fallback;
+    }
+
+    setRepair(questions);
+
+    // 2. Background: generate novel repair questions for next session
+    if (remoteEnabled && user?.email && !generatingRef.current) {
+      generatingRef.current = true;
+      void createNovelTestSession({
+        email: user.email, mode: 'weakness-repair', count: 16,
+        topics: weakTopics, attempts, fallbackQuestions: fallback,
+      })
+        .then((newQs) => setStoredRag((prev) => {
+          const existing = new Set(prev.map((q) => q.id));
+          return [...prev, ...newQs.filter((q) => !existing.has(q.id))];
+        }))
+        .catch(() => {})
+        .finally(() => { generatingRef.current = false; });
     }
   };
 
@@ -81,9 +115,8 @@ export default function Weakness() {
         title="Weakness Lab"
         subtitle="Exactly where you're losing points — and how to fix it."
         action={
-          <button className="btn-primary px-4 py-2 text-sm" onClick={startRepair} disabled={loading}>
-            {loading ? <Loader2 size={15} className="animate-spin" /> : <Wrench size={15} />}
-            {loading ? 'Building novel repair…' : 'Start repair mode'}
+          <button className="btn-primary px-4 py-2 text-sm" onClick={startRepair}>
+            <Wrench size={15} /> Start repair mode
           </button>
         }
       />
