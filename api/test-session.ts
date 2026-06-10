@@ -8,6 +8,7 @@ import {
   upsertRagQuestion,
   type RagQuestionRow,
 } from './_lib/turso.js';
+import { checkRateLimit, pruneRateLimitStore } from './_lib/rateLimit.js';
 
 export const config = { maxDuration: 60, api: { bodyParser: { sizeLimit: '4mb' } } };
 
@@ -348,6 +349,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email = '', mode = 'practice', count = 8, topics = [],
       attempts = [], avoidPrompts = [], fallbackQuestions = [],
     } = req.body ?? {};
+
+    // Rate limit: max 10 generation requests per email per minute
+    pruneRateLimitStore();
+    const rateLimitKey = `test-session:${String(email).toLowerCase()}`;
+    if (!checkRateLimit(rateLimitKey, 10, 60_000)) {
+      return res.status(429).json({ error: 'Too many requests — please wait a moment before generating more questions.' });
+    }
 
     const requestedCount = Math.max(1, Math.min(100, Number(count) || 8));
     const attemptSummaries = (Array.isArray(attempts) ? attempts : []) as AttemptSummary[];

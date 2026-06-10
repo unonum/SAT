@@ -45,8 +45,14 @@ export default function MockTest() {
         if (session.status === 'complete') {
           setSessionState('complete');
         } else {
-          // Resume: load stored questions
-          const qs: Question[] = JSON.parse(session.questions_json || '[]');
+          // Resume: validate and load stored questions
+          let qs: Question[] = [];
+          try { qs = JSON.parse(session.questions_json || '[]'); } catch { /* fall through */ }
+          if (!Array.isArray(qs) || qs.length < 2 || !qs[0]?.prompt) {
+            // Corrupted or empty questions — treat as a fresh start
+            setSessionState('none');
+            return;
+          }
           setStoredRag((prev) => {
             const ex = new Set(prev.map((q) => q.id));
             return [...prev, ...qs.filter((q) => !ex.has(q.id))];

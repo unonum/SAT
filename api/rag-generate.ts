@@ -7,6 +7,7 @@ import {
   cosineSimilarity,
   type RagQuestionRow,
 } from './_lib/turso.js';
+import { checkRateLimit, pruneRateLimitStore } from './_lib/rateLimit.js';
 
 export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
 
@@ -171,6 +172,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { topic, difficulty, count = 5, section = 'Math' } = req.body ?? {};
   if (!topic || !difficulty) {
     return res.status(400).json({ error: 'topic and difficulty are required' });
+  }
+
+  // Rate limit: max 20 generation requests per IP per minute (admin tool)
+  pruneRateLimitStore();
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? 'unknown';
+  if (!checkRateLimit(`rag-generate:${ip}`, 20, 60_000)) {
+    return res.status(429).json({ error: 'Too many requests — please wait before generating more.' });
   }
 
   try {
