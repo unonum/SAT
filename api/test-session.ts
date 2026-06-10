@@ -9,7 +9,7 @@ import {
   type RagQuestionRow,
 } from './_lib/turso.js';
 
-export const config = { maxDuration: 300, api: { bodyParser: { sizeLimit: '4mb' } } };
+export const config = { maxDuration: 60, api: { bodyParser: { sizeLimit: '4mb' } } };
 
 type Difficulty = 'easy' | 'medium' | 'hard';
 type Section = 'Math' | 'Reading & Writing';
@@ -32,8 +32,6 @@ type ClientQuestion = {
 };
 type AttemptSummary = { questionId: string; topic: string; difficulty: Difficulty; correct: boolean; ts: number };
 type Slot = { topic: string; section: Section; difficulty: Difficulty };
-type Pattern = { id: string; text: string; embedding: number[]; sourceChunk: string | null };
-type GeneratedItem = { slot: Slot; question: ClientQuestion; embedding: number[] };
 
 const TOPICS: Array<{ id: string; section: Section }> = [
   { id: 'algebra', section: 'Math' },
@@ -47,242 +45,86 @@ const TOPICS: Array<{ id: string; section: Section }> = [
 ];
 const VALID_DIFFICULTIES = new Set<Difficulty>(['easy', 'medium', 'hard']);
 const VALID_SECTIONS = new Set<Section>(['Math', 'Reading & Writing']);
-const EMBEDDING_MODEL = 'text-embedding-3-small';
-const EMBEDDING_DUPLICATE_THRESHOLD = 0.84;
-const MAX_GENERATION_ROUNDS = 3;
-const GENERATION_BATCH_SIZE = 4;
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function wordSet(text: string): Set<string> {
-  return new Set(normalize(text).split(/\s+/).filter((word) => word.length > 2));
+function lexicalOverlap(a: string, b: string): number {
+  const wa = new Set(normalize(a).split(/\s+/).filter((w) => w.length > 2));
+  const wb = new Set(normalize(b).split(/\s+/).filter((w) => w.length > 2));
+  if (!wa.size || !wb.size) return 0;
+  let n = 0;
+  for (const w of wa) if (wb.has(w)) n++;
+  return n / Math.max(wa.size, wb.size);
 }
 
-function lexicalSimilarity(a: string, b: string): number {
-  const left = wordSet(a);
-  const right = wordSet(b);
-  if (!left.size || !right.size) return 0;
-  let intersection = 0;
-  for (const word of left) if (right.has(word)) intersection++;
-  return intersection / Math.max(left.size, right.size);
-}
-
-function isLexicallyNovel(text: string, priorTexts: string[]): boolean {
-  const normalized = normalize(text);
-  if (!normalized) return false;
-  return !priorTexts.some((prior) => {
-    const other = normalize(prior);
-    return normalized === other || normalized.includes(other) || other.includes(normalized) || lexicalSimilarity(text, prior) >= 0.72;
-  });
-}
-
-function questionText(question: Pick<ClientQuestion, 'passage' | 'prompt' | 'choices'>): string {
-  return [question.passage ?? '', question.prompt, ...question.choices.map((choice) => choice.text)].join('\n');
-}
-
-function rowText(row: RagQuestionRow): string {
-  let choices: Choice[] = [];
-  try { choices = JSON.parse(row.choices) as Choice[]; } catch { choices = []; }
-  return [row.passage ?? '', row.prompt, ...choices.map((choice) => choice.text)].join('\n');
+function isNovel(prompt: string, existing: string[]): boolean {
+  return !existing.some((e) => lexicalOverlap(e, prompt) >= 0.68);
 }
 
 function masteryDifficulty(topic: string, attempts: AttemptSummary[]): Difficulty {
-  const recent = attempts.filter((attempt) => attempt.topic === topic).sort((a, b) => b.ts - a.ts).slice(0, 8);
+  const recent = attempts.filter((a) => a.topic === topic).sort((a, b) => b.ts - a.ts).slice(0, 8);
   if (!recent.length) return 'easy';
-  const accuracy = recent.filter((attempt) => attempt.correct).length / recent.length;
-  if (accuracy >= 0.8) return 'hard';
-  if (accuracy >= 0.5) return 'medium';
+  const acc = recent.filter((a) => a.correct).length / recent.length;
+  if (acc >= 0.8) return 'hard';
+  if (acc >= 0.5) return 'medium';
   return 'easy';
 }
 
 function buildSlots(count: number, requestedTopics: string[], attempts: AttemptSummary[]): Slot[] {
-  const allowed = requestedTopics.length ? TOPICS.filter((topic) => requestedTopics.includes(topic.id)) : TOPICS;
+  const allowed = requestedTopics.length ? TOPICS.filter((t) => requestedTopics.includes(t.id)) : TOPICS;
   const topics = allowed.length ? allowed : TOPICS;
-  return Array.from({ length: count }, (_, index) => {
-    const topic = topics[index % topics.length];
-    return { ...topic, difficulty: masteryDifficulty(topic.id, attempts) };
+  return Array.from({ length: count }, (_, i) => {
+    const t = topics[i % topics.length];
+    return { ...t, difficulty: masteryDifficulty(t.id, attempts) };
   });
 }
 
-function parseGeneratedQuestions(text: string): ClientQuestion[] {
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start < 0 || end <= start) return [];
-  try { return JSON.parse(text.slice(start, end + 1)) as ClientQuestion[]; } catch { return []; }
+function parseQuestions(text: string): ClientQuestion[] {
+  const s = text.indexOf('['), e = text.lastIndexOf(']');
+  if (s < 0 || e <= s) return [];
+  try { return JSON.parse(text.slice(s, e + 1)) as ClientQuestion[]; } catch { return []; }
 }
 
-function isValidQuestion(question: ClientQuestion | undefined): question is ClientQuestion {
-  if (!question?.prompt || !question.subtopic || !VALID_SECTIONS.has(question.section) || !VALID_DIFFICULTIES.has(question.difficulty)) return false;
-  if (!Array.isArray(question.choices) || question.choices.length !== 4) return false;
-  const ids = question.choices.map((choice) => choice.id);
-  return ids.join('') === 'ABCD' && ids.includes(question.correct) && question.choices.every((choice) => Boolean(choice.text?.trim()));
+function isValid(q: ClientQuestion | undefined): q is ClientQuestion {
+  if (!q?.prompt || !q.subtopic || !VALID_SECTIONS.has(q.section) || !VALID_DIFFICULTIES.has(q.difficulty)) return false;
+  if (!Array.isArray(q.choices) || q.choices.length !== 4) return false;
+  const ids = q.choices.map((c) => c.id);
+  return ids.join('') === 'ABCD' && ids.includes(q.correct) && q.choices.every((c) => Boolean(c.text?.trim()));
 }
 
 async function ensureNoveltySchema(): Promise<void> {
   const db = getClient();
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS question_exposures (
-      user_email TEXT NOT NULL,
-      question_id TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      exposed_at INTEGER NOT NULL,
-      PRIMARY KEY (user_email, question_id)
-    )
-  `);
-  await db.execute('CREATE INDEX IF NOT EXISTS idx_question_exposures_user ON question_exposures(user_email, exposed_at)');
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS rag_question_vectors (
-      question_id TEXT PRIMARY KEY,
-      embedding TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    )
-  `);
+  await db.execute(`CREATE TABLE IF NOT EXISTS question_exposures (
+    user_email TEXT NOT NULL, question_id TEXT NOT NULL, mode TEXT NOT NULL,
+    exposed_at INTEGER NOT NULL, PRIMARY KEY (user_email, question_id)
+  )`);
 }
 
-async function loadStudentQuestionIds(email: string): Promise<Set<string>> {
-  if (!email) return new Set();
-  const db = getClient();
-  const [attempted, exposed] = await Promise.all([
-    db.execute({ sql: 'SELECT DISTINCT question_id FROM attempts WHERE user_email = ?', args: [email.toLowerCase()] }),
-    db.execute({ sql: 'SELECT question_id FROM question_exposures WHERE user_email = ?', args: [email.toLowerCase()] }),
-  ]);
-  return new Set([...attempted.rows, ...exposed.rows].map((row) => String(row.question_id)));
+async function loadSeenIds(email: string, attempts: AttemptSummary[]): Promise<Set<string>> {
+  const ids = new Set(attempts.map((a) => a.questionId));
+  if (!email) return ids;
+  try {
+    const db = getClient();
+    const [att, exp] = await Promise.all([
+      db.execute({ sql: 'SELECT DISTINCT question_id FROM attempts WHERE user_email = ?', args: [email.toLowerCase()] }),
+      db.execute({ sql: 'SELECT question_id FROM question_exposures WHERE user_email = ?', args: [email.toLowerCase()] }),
+    ]);
+    for (const r of [...att.rows, ...exp.rows]) ids.add(String(r.question_id));
+  } catch { /* best-effort */ }
+  return ids;
 }
 
 async function saveExposures(email: string, mode: string, questions: ClientQuestion[]): Promise<void> {
   if (!email || !questions.length) return;
   const now = Date.now();
-  await getClient().batch(questions.map((question) => ({
-    sql: `INSERT OR IGNORE INTO question_exposures (user_email, question_id, mode, exposed_at) VALUES (?, ?, ?, ?)`,
-    args: [email.toLowerCase(), question.id, mode, now],
-  })), 'write');
-}
-
-async function embedTexts(openai: InstanceType<(typeof import('openai'))['default']>, texts: string[]): Promise<number[][]> {
-  if (!texts.length) return [];
-  const output: number[][] = [];
-  for (let index = 0; index < texts.length; index += 64) {
-    const response = await openai.embeddings.create({ model: EMBEDDING_MODEL, input: texts.slice(index, index + 64) });
-    output.push(...response.data.map((item) => item.embedding));
-  }
-  return output;
-}
-
-async function loadQuestionPatterns(
-  openai: InstanceType<(typeof import('openai'))['default']>,
-  rows: RagQuestionRow[]
-): Promise<Pattern[]> {
-  if (!rows.length) return [];
-  const db = getClient();
-  const ids = rows.map((row) => row.id);
-  const vectors = new Map<string, number[]>();
-  for (let index = 0; index < ids.length; index += 200) {
-    const page = ids.slice(index, index + 200);
-    const result = await db.execute({
-      sql: `SELECT question_id, embedding FROM rag_question_vectors WHERE question_id IN (${page.map(() => '?').join(',')})`,
-      args: page,
-    });
-    for (const row of result.rows) vectors.set(String(row.question_id), JSON.parse(String(row.embedding)) as number[]);
-  }
-
-  const missing = rows.filter((row) => !vectors.has(row.id));
-  if (missing.length) {
-    const embeddings = await embedTexts(openai, missing.map(rowText));
-    const now = Date.now();
-    await db.batch(missing.map((row, index) => ({
-      sql: 'INSERT OR REPLACE INTO rag_question_vectors (question_id, embedding, created_at) VALUES (?, ?, ?)',
-      args: [row.id, JSON.stringify(embeddings[index]), now],
+  try {
+    await getClient().batch(questions.map((q) => ({
+      sql: `INSERT OR IGNORE INTO question_exposures (user_email, question_id, mode, exposed_at) VALUES (?, ?, ?, ?)`,
+      args: [email.toLowerCase(), q.id, mode, now],
     })), 'write');
-    missing.forEach((row, index) => vectors.set(row.id, embeddings[index]));
-  }
-
-  return rows.flatMap((row) => {
-    const embedding = vectors.get(row.id);
-    return embedding ? [{ id: row.id, text: rowText(row), embedding, sourceChunk: row.source_chunk }] : [];
-  });
-}
-
-function mostRelevant<T extends { embedding: number[] }>(items: T[], query: number[], count: number): T[] {
-  return items
-    .map((item) => ({ item, score: cosineSimilarity(query, item.embedding) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, count)
-    .map(({ item }) => item);
-}
-
-async function generateBatch(
-  openai: InstanceType<(typeof import('openai'))['default']>,
-  slots: Slot[],
-  patternSets: Pattern[][],
-  sourceContexts: Array<{ id: string; content: string }[]>,
-  forbiddenTexts: string[],
-  forbiddenEmbeddings: number[][]
-): Promise<GeneratedItem[]> {
-  const requests = slots.map((slot, index) => ({
-    position: index,
-    ...slot,
-    questionPatterns: patternSets[index].map((pattern) => pattern.text),
-    sourceConcepts: sourceContexts[index].map((context) => context.content),
-  }));
-  const prompt = `You are an expert SAT item writer. Create exactly ${slots.length} NEW questions in the same order as REQUESTS.
-
-The vector database examples are PATTERNS ONLY. Infer the tested skill, structure, difficulty, distractor logic, and reasoning depth. Do not reuse their wording, names, numbers, passages, answer choices, equations, scenarios, or surface setup. Each output must require a materially different solution path or reading context.
-
-STRICT NOVELTY RULES:
-- Every question must be newly authored now; never return a database question.
-- Do not make a variant by merely changing names, values, nouns, or answer order.
-- Questions in this response must differ from one another in setup and reasoning path.
-- Avoid every item summarized in FORBIDDEN_EXAMPLES.
-- Return only a valid JSON array with no markdown.
-
-Each item must contain: topic, subtopic, section, difficulty, passage (string or null), prompt, choices exactly [{id:"A",text:"..."},...,{id:"D",text:"..."}], correct, parTimeSec, and explanation containing correctWhy, fastStrategy, simplerView, trapNote, timeTrick, whyWrong.
-
-REQUESTS=${JSON.stringify(requests)}
-FORBIDDEN_EXAMPLES=${JSON.stringify(forbiddenTexts.slice(-80))}`;
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 1,
-  });
-  const parsed = parseGeneratedQuestions(response.choices[0]?.message?.content ?? '').slice(0, slots.length);
-  const validEntries = parsed
-    .map((question, slotIndex) => ({ question, slotIndex }))
-    .filter((entry): entry is { question: ClientQuestion; slotIndex: number } => isValidQuestion(entry.question));
-  const candidateEmbeddings = await embedTexts(openai, validEntries.map(({ question }) => questionText(question)));
-  const accepted: GeneratedItem[] = [];
-  const acceptedTexts: string[] = [];
-  const acceptedEmbeddings: number[][] = [];
-
-  for (let index = 0; index < validEntries.length; index++) {
-    const { question: candidate, slotIndex } = validEntries[index];
-    const embedding = candidateEmbeddings[index];
-    const slot = slots[slotIndex];
-    const text = questionText(candidate);
-    const patternTexts = patternSets[slotIndex]?.map((pattern) => pattern.text) ?? [];
-    const comparisons = [...forbiddenEmbeddings, ...acceptedEmbeddings, ...(patternSets[slotIndex]?.map((pattern) => pattern.embedding) ?? [])];
-    const embeddingDuplicate = comparisons.some((prior) => cosineSimilarity(embedding, prior) >= EMBEDDING_DUPLICATE_THRESHOLD);
-    if (!slot || !isLexicallyNovel(text, [...forbiddenTexts, ...acceptedTexts, ...patternTexts]) || embeddingDuplicate) continue;
-
-    accepted.push({
-      slot,
-      question: {
-        ...candidate,
-        id: '',
-        topic: slot.topic,
-        section: slot.section,
-        difficulty: slot.difficulty,
-        ragGenerated: true,
-        sourceChunk: sourceContexts[slotIndex]?.[0]?.id ?? patternSets[slotIndex]?.[0]?.sourceChunk ?? undefined,
-      },
-      embedding,
-    });
-    acceptedTexts.push(text);
-    acceptedEmbeddings.push(embedding);
-  }
-  return accepted;
+  } catch { /* best-effort */ }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -295,107 +137,191 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     await ensureRagSchema();
     await ensureNoveltySchema();
-    const { email = '', mode = 'practice', count = 8, topics = [], attempts = [], avoidPrompts = [], fallbackQuestions = [] } = req.body ?? {};
-    const requestedCount = Math.max(1, Math.min(30, Number(count) || 8));
+
+    const {
+      email = '', mode = 'practice', count = 8, topics = [],
+      attempts = [], avoidPrompts = [], fallbackQuestions = [],
+    } = req.body ?? {};
+
+    const requestedCount = Math.max(1, Math.min(20, Number(count) || 8));
     const attemptSummaries = (Array.isArray(attempts) ? attempts : []) as AttemptSummary[];
     const slots = buildSlots(requestedCount, Array.isArray(topics) ? topics : [], attemptSummaries);
-    const studentIds = await loadStudentQuestionIds(String(email)).catch(() => new Set<string>());
-    for (const attempt of attemptSummaries) studentIds.add(attempt.questionId);
+    const seenIds = await loadSeenIds(String(email), attemptSummaries);
 
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const [questionRows, chunks] = await Promise.all([fetchRagQuestions(), fetchAllChunks()]);
-    const patterns = await loadQuestionPatterns(openai, questionRows);
-    const exposedPatternTexts = questionRows.filter((row) => studentIds.has(row.id)).map(rowText);
-    const clientAvoidPrompts = (Array.isArray(avoidPrompts) ? avoidPrompts : []).filter(Boolean).map(String);
-    const forbiddenTexts = [...clientAvoidPrompts, ...exposedPatternTexts];
-    const forbiddenEmbeddings = await embedTexts(openai, forbiddenTexts);
 
-    const queryTexts = slots.map((slot) => `SAT ${slot.section} ${slot.topic} ${slot.difficulty} question pattern and reasoning`);
-    const queryEmbeddings = await embedTexts(openai, queryTexts);
-    const patternSets = slots.map((slot, index) => mostRelevant(
-      patterns.filter((pattern) => {
-        const row = questionRows.find((question) => question.id === pattern.id);
-        return row?.topic === slot.topic && row?.difficulty === slot.difficulty;
-      }),
-      queryEmbeddings[index],
-      3
-    ));
-    const sourceContexts = slots.map((_, index) => mostRelevant(chunks, queryEmbeddings[index], 3));
+    // ── 1. Fetch stored RAG questions unseen by this student ──────────────
+    const [storedRows, chunks] = await Promise.all([fetchRagQuestions(), fetchAllChunks()]);
+    const unseenStored = storedRows.filter((r) => !seenIds.has(r.id));
 
-    const generated: GeneratedItem[] = [];
-    let pendingSlots = [...slots];
-    for (let round = 0; round < MAX_GENERATION_ROUNDS && pendingSlots.length; round++) {
-      const nextPending: Slot[] = [];
-      for (let start = 0; start < pendingSlots.length; start += GENERATION_BATCH_SIZE) {
-        const batch = pendingSlots.slice(start, start + GENERATION_BATCH_SIZE);
-        const originalIndexes = batch.map((slot) => slots.findIndex((candidate) => candidate === slot));
-        const accepted = await generateBatch(
-          openai,
-          batch,
-          originalIndexes.map((index) => patternSets[index]),
-          originalIndexes.map((index) => sourceContexts[index]),
-          [...forbiddenTexts, ...generated.map(({ question }) => questionText(question))],
-          [...forbiddenEmbeddings, ...generated.map(({ embedding }) => embedding)]
-        ).catch(() => []);
-        generated.push(...accepted);
-        const acceptedSlots = new Set(accepted.map((item) => item.slot));
-        nextPending.push(...batch.filter((slot) => !acceptedSlots.has(slot)));
-      }
-      pendingSlots = nextPending;
+    // ── 2. Embed a single combined query for RAG context retrieval ─────────
+    const queryText = `SAT ${slots.map((s) => `${s.section} ${s.topic} ${s.difficulty}`).join(', ')} questions`;
+    let contextText = `General SAT content for these topics.`;
+    let topChunkId: string | null = null;
+
+    if (chunks.length > 0) {
+      const embResp = await openai.embeddings.create({ model: 'text-embedding-3-small', input: [queryText] });
+      const qv = embResp.data[0].embedding;
+      const scored = chunks.map((c) => ({ ...c, score: cosineSimilarity(qv, c.embedding) }))
+        .sort((a, b) => b.score - a.score);
+      const top8 = scored.slice(0, 8);
+      contextText = top8.map((c) => c.content).join('\n\n---\n\n');
+      topChunkId = top8[0]?.id ?? null;
     }
 
+    // ── 3. Build forbidden prompts list (stored + client avoids) ──────────
+    const clientAvoid = (Array.isArray(avoidPrompts) ? avoidPrompts : []).filter(Boolean).map(String);
+    const storedPrompts = storedRows.map((r) => r.prompt);
+    const forbiddenPrompts = [...new Set([...clientAvoid, ...storedPrompts])];
+
+    // ── 4. Generate all slots in a SINGLE LLM call ────────────────────────
     const now = Date.now();
+    const slotDescriptions = slots.map((s, i) => ({
+      index: i,
+      topic: s.topic,
+      section: s.section,
+      difficulty: s.difficulty,
+    }));
+
+    const prompt = `You are an expert SAT item writer. Generate exactly ${slots.length} brand-new SAT questions — one per slot below.
+
+SLOTS:
+${JSON.stringify(slotDescriptions, null, 2)}
+
+CONTEXT MATERIAL (use to inspire questions — do NOT copy verbatim):
+${contextText.slice(0, 6000)}
+
+STRICT RULES:
+- Return ONLY a valid JSON array — no markdown fences, no explanation.
+- Every question must be entirely original — different wording, scenario, numbers, and reasoning path from all FORBIDDEN examples.
+- Each object must have: topic, subtopic, section, difficulty, passage (string|null), prompt, choices (exactly [{id:"A",...},{id:"B",...},{id:"C",...},{id:"D",...}]), correct, parTimeSec, explanation (with correctWhy, fastStrategy, simplerView, trapNote, timeTrick, whyWrong).
+
+FORBIDDEN PROMPTS (do not reuse or paraphrase):
+${forbiddenPrompts.slice(-60).map((p, i) => `${i + 1}. ${p.slice(0, 120)}`).join('\n')}`;
+
+    // Call OpenAI and Anthropic in parallel for more variety
+    const [oaiResult, anthropicResult] = await Promise.allSettled([
+      openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.9,
+      }).then((r) => parseQuestions(r.choices[0]?.message?.content ?? '')),
+
+      (async () => {
+        const Anthropic = (await import('@anthropic-ai/sdk')).default;
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const r = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        const text = r.content[0]?.type === 'text' ? r.content[0].text : '';
+        return parseQuestions(text);
+      })(),
+    ]);
+
+    const allGenerated: ClientQuestion[] = [];
+    if (oaiResult.status === 'fulfilled') allGenerated.push(...oaiResult.value);
+    if (anthropicResult.status === 'fulfilled') allGenerated.push(...anthropicResult.value);
+
+    // ── 5. Deduplicate and validate ────────────────────────────────────────
+    const acceptedPrompts: string[] = [...forbiddenPrompts];
     const finalQuestions: ClientQuestion[] = [];
-    for (let index = 0; index < generated.length && finalQuestions.length < requestedCount; index++) {
-      const item = generated[index];
-      const question = { ...item.question, id: `rag-${item.question.topic}-${now}-${index}-${Math.random().toString(36).slice(2, 8)}` };
-      await upsertRagQuestion({
-        id: question.id,
-        topic: question.topic,
-        subtopic: question.subtopic,
-        section: question.section,
-        difficulty: question.difficulty,
-        passage: question.passage ?? null,
-        prompt: question.prompt,
-        choices: JSON.stringify(question.choices),
-        correct: question.correct,
-        par_time_sec: Number(question.parTimeSec) || 60,
-        explanation: JSON.stringify(question.explanation ?? {}),
-        source_chunk: question.sourceChunk ?? null,
-        created_at: now,
-      });
-      await getClient().execute({
-        sql: 'INSERT OR REPLACE INTO rag_question_vectors (question_id, embedding, created_at) VALUES (?, ?, ?)',
-        args: [question.id, JSON.stringify(item.embedding), now],
-      });
-      finalQuestions.push(question);
-    }
 
-    // Static questions are an emergency availability fallback only; generated questions are always preferred.
-    const fallback = ((Array.isArray(fallbackQuestions) ? fallbackQuestions : []) as ClientQuestion[])
-      .filter((question) => !studentIds.has(question.id) && !finalQuestions.some((item) => item.id === question.id));
-    const fallbackEmbeddings = await embedTexts(openai, fallback.map(questionText));
-    const acceptedEmbeddings = generated.map(({ embedding }) => embedding);
-    for (let index = 0; index < fallback.length; index++) {
+    for (const q of allGenerated) {
       if (finalQuestions.length >= requestedCount) break;
-      const question = fallback[index];
-      const embedding = fallbackEmbeddings[index];
-      const text = questionText(question);
-      const duplicate = [...forbiddenEmbeddings, ...acceptedEmbeddings]
-        .some((prior) => cosineSimilarity(embedding, prior) >= EMBEDDING_DUPLICATE_THRESHOLD);
-      if (duplicate || !isLexicallyNovel(text, [...forbiddenTexts, ...finalQuestions.map(questionText)])) continue;
+      if (!isValid(q)) continue;
+      if (!isNovel(q.prompt, acceptedPrompts)) continue;
+      const slot = slots[finalQuestions.length] ?? slots[slots.length - 1];
+      const id = `rag-${slot.topic}-${now}-${finalQuestions.length}-${Math.random().toString(36).slice(2, 7)}`;
+      const question: ClientQuestion = {
+        ...q,
+        id,
+        topic: slot.topic,
+        section: slot.section,
+        difficulty: slot.difficulty,
+        ragGenerated: true,
+        sourceChunk: topChunkId ?? undefined,
+      };
       finalQuestions.push(question);
-      acceptedEmbeddings.push(embedding);
+      acceptedPrompts.push(q.prompt);
     }
 
-    if (!finalQuestions.length) return res.status(503).json({ error: 'No novel questions are currently available' });
+    // ── 6. Save generated questions to DB ─────────────────────────────────
+    for (const q of finalQuestions) {
+      const row: RagQuestionRow = {
+        id: q.id,
+        topic: q.topic,
+        subtopic: q.subtopic,
+        section: q.section,
+        difficulty: q.difficulty,
+        passage: q.passage ?? null,
+        prompt: q.prompt,
+        choices: JSON.stringify(q.choices),
+        correct: q.correct,
+        par_time_sec: Number(q.parTimeSec) || 60,
+        explanation: JSON.stringify(q.explanation ?? {}),
+        source_chunk: q.sourceChunk ?? null,
+        created_at: now,
+      };
+      await upsertRagQuestion(row);
+    }
+
+    // ── 7. Fill remaining slots from unseen stored questions ──────────────
+    const acceptedIds = new Set(finalQuestions.map((q) => q.id));
+    const acceptedFinalPrompts = finalQuestions.map((q) => q.prompt);
+
+    for (const row of unseenStored) {
+      if (finalQuestions.length >= requestedCount) break;
+      if (acceptedIds.has(row.id)) continue;
+      if (!isNovel(row.prompt, [...forbiddenPrompts, ...acceptedFinalPrompts])) continue;
+      let choices: Choice[] = [];
+      try { choices = JSON.parse(row.choices) as Choice[]; } catch { continue; }
+      finalQuestions.push({
+        id: row.id,
+        topic: row.topic,
+        subtopic: row.subtopic,
+        section: row.section as Section,
+        difficulty: row.difficulty as Difficulty,
+        passage: row.passage ?? undefined,
+        prompt: row.prompt,
+        choices,
+        correct: row.correct as ChoiceId,
+        parTimeSec: row.par_time_sec,
+        explanation: typeof row.explanation === 'string'
+          ? (JSON.parse(row.explanation) as Record<string, unknown>)
+          : (row.explanation as Record<string, unknown>),
+        ragGenerated: true,
+        sourceChunk: row.source_chunk ?? undefined,
+      });
+      acceptedFinalPrompts.push(row.prompt);
+    }
+
+    // ── 8. Fallback to client-supplied static questions ───────────────────
+    if (finalQuestions.length < requestedCount) {
+      const fallbackSeenIds = new Set(finalQuestions.map((q) => q.id));
+      const fallback = (Array.isArray(fallbackQuestions) ? fallbackQuestions : []) as ClientQuestion[];
+      for (const q of fallback) {
+        if (finalQuestions.length >= requestedCount) break;
+        if (seenIds.has(q.id) || fallbackSeenIds.has(q.id)) continue;
+        if (!isNovel(q.prompt, acceptedFinalPrompts)) continue;
+        finalQuestions.push(q);
+        acceptedFinalPrompts.push(q.prompt);
+      }
+    }
+
+    if (!finalQuestions.length) {
+      return res.status(503).json({ error: 'No novel questions available — please try again' });
+    }
+
     await saveExposures(String(email), String(mode), finalQuestions);
+
     return res.status(200).json({
       sessionId: `session-${now}-${Math.random().toString(36).slice(2, 8)}`,
       mode,
-      questions: finalQuestions,
-      source: finalQuestions.every((question) => question.ragGenerated) ? 'vector-pattern-llm' : 'vector-pattern-llm-with-static-fallback',
+      questions: finalQuestions.slice(0, requestedCount),
+      source: finalQuestions.some((q) => q.ragGenerated) ? 'rag-llm' : 'static-fallback',
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
