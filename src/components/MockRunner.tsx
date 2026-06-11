@@ -111,9 +111,17 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   })();
 
   const [phase, setPhase] = useState<Phase>(initPhase);
-  // Within-module index (0-based within the current module)
-  const [rwIdx, setRwIdx] = useState(session?.rw_idx ?? 0);
-  const [mathIdx, setMathIdx] = useState(session?.math_idx ?? 0);
+  // Within-module index (0-based within the current module).
+  // DB stores rw_idx as absolute (0-53), so subtract 27 when resuming into mod2.
+  // Same for math: subtract 22 when resuming into mod2.
+  const [rwIdx, setRwIdx] = useState(() => {
+    const stored = session?.rw_idx ?? 0;
+    return initPhase === 'rw2' ? Math.max(0, stored - 27) : stored;
+  });
+  const [mathIdx, setMathIdx] = useState(() => {
+    const stored = session?.math_idx ?? 0;
+    return initPhase === 'math2' ? Math.max(0, stored - 22) : stored;
+  });
   const [answers, setAnswers] = useState<Record<string, AnswerRecord>>(initAnswers);
   // Current selection before confirming navigation
   const [pending, setPending] = useState<ChoiceId | null>(null);
@@ -250,6 +258,16 @@ export default function MockRunner({ questions, email, date, session }: Props) {
       setPhase('review');
     }
   }, [timer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Skip empty modules (pool too small to fill all 4) ─────────────────────
+  useEffect(() => {
+    const activePhases: Phase[] = ['rw1', 'rw2', 'math1', 'math2'];
+    if (!activePhases.includes(phase)) return;
+    const modQs = phase === 'rw1' ? rwMod1 : phase === 'rw2' ? rwMod2 : phase === 'math1' ? mathMod1 : mathMod2;
+    if (modQs.length > 0) return;
+    const next: Phase = phase === 'rw1' ? 'rw-mod-break' : phase === 'rw2' ? 'break' : phase === 'math1' ? 'math-mod-break' : 'review';
+    setPhase(next);
+  }, [phase, rwMod1.length, rwMod2.length, mathMod1.length, mathMod2.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Navigate to a specific question within the current module ─────────────
   const goTo = useCallback((targetIdx: number) => {
@@ -503,17 +521,8 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   const curIdx = isRw ? rwIdx : mathIdx;
   const q = modQs[curIdx];
 
-  // Empty module: auto-advance to the next phase so the test keeps running
-  // This happens when the static bank can't fully fill all 4 modules (e.g. only 46 R&W available)
-  if (modQs.length === 0) {
-    const nextPhase: Phase =
-      phase === 'rw1' ? 'rw-mod-break' :
-      phase === 'rw2' ? 'break' :
-      phase === 'math1' ? 'math-mod-break' : 'review';
-    // Use effect-free immediate transition via a render-time state update pattern
-    setTimeout(() => setPhase(nextPhase), 0);
-    return null;
-  }
+  // Guard: q may be undefined during a phase transition (useEffect fires after render)
+  if (!q) return null;
 
   const isTimeLow = timer !== null && timer <= 5 * 60;
   const isTimeCritical = timer !== null && timer <= 2 * 60;
