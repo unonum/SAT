@@ -169,6 +169,7 @@ export default function Admin() {
   const [topic, setTopic] = useState<string>('all');
   const [preview, setPreview] = useState<Question | null>(null);
   const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses' | 'health'>('questions');
+  const [pushedTopic, setPushedTopic] = useState<string | null>(null);
 
   const filtered = useMemo(
     () =>
@@ -321,15 +322,21 @@ export default function Admin() {
                           <td className="py-2 pr-3 text-muted text-xs">{sig.suggestedAction}</td>
                           <td className="py-2">
                             <button
-                              className="btn-ghost h-8 px-2 text-xs flex items-center gap-1"
-                              onClick={() => setMockSettings({
-                                difficultyFilter: {
-                                  ...mockSettings.difficultyFilter,
-                                  [sig.topic]: [sig.difficulty],
-                                },
-                              })}
+                              className={`h-8 px-2 text-xs flex items-center gap-1 rounded-lg border transition-colors ${pushedTopic === sig.topic ? 'border-success/40 bg-success/10 text-success' : 'btn-ghost'}`}
+                              onClick={() => {
+                                setMockSettings({
+                                  difficultyFilter: {
+                                    ...mockSettings.difficultyFilter,
+                                    [sig.topic]: [sig.difficulty],
+                                  },
+                                });
+                                setPushedTopic(sig.topic);
+                                setTimeout(() => setPushedTopic(null), 2500);
+                                setActiveTab('mock-settings');
+                              }}
                             >
-                              <ChevronRight size={12} /> Push to mock
+                              <ChevronRight size={12} />
+                              {pushedTopic === sig.topic ? '✓ Pushed!' : 'Push to mock'}
                             </button>
                           </td>
                         </tr>
