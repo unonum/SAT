@@ -35,6 +35,8 @@ export interface Question {
   section: Section;
   difficulty: Difficulty;
   passage?: string;
+  /** Inline SVG markup for a diagram, graph, or table accompanying the question */
+  figure?: string;
   prompt: string;
   choices: Choice[];
   correct: 'A' | 'B' | 'C' | 'D';

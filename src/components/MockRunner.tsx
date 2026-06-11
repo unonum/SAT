@@ -620,6 +620,12 @@ export default function MockRunner({ questions, email, date, session }: Props) {
             {q.passage && (
               <div className="mb-5 rounded-2xl border-l-4 border-brand-400 bg-brand-500/5 p-4 text-sm leading-relaxed text-foreground whitespace-pre-wrap">{q.passage}</div>
             )}
+            {q.figure && (
+              <div
+                className="mb-5 flex justify-center rounded-2xl border border-[rgb(var(--border))] bg-white dark:bg-slate-900 p-4 overflow-x-auto"
+                dangerouslySetInnerHTML={{ __html: q.figure }}
+              />
+            )}
             <p className="text-base leading-relaxed mb-6 font-medium">{q.prompt}</p>
             <div className="space-y-2.5">
               {q.choices.map((c) => (

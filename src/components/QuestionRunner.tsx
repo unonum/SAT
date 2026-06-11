@@ -266,6 +266,14 @@ export default function QuestionRunner({ questions, mode, title, timed, returnTo
               </div>
             )}
 
+            {/* Figure (inline SVG diagram / graph / table) */}
+            {q.figure && (
+              <div
+                className="mb-5 flex justify-center rounded-2xl border border-[rgb(var(--border))] bg-white dark:bg-slate-900 p-4 overflow-x-auto"
+                dangerouslySetInnerHTML={{ __html: q.figure }}
+              />
+            )}
+
             {/* Prompt */}
             <p className="text-lg font-medium leading-relaxed mb-6">{q.prompt}</p>
 
