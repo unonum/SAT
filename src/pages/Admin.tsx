@@ -4,7 +4,7 @@ import { TOPICS, TOPIC_MAP } from '@/lib/topics';
 import { useStore } from '@/lib/store';
 import { Card, SectionTitle, Pill, Stat } from '@/components/ui';
 import type { Difficulty, Question, TopicId } from '@/lib/types';
-import { Database, Search, Eye, BarChart3, CheckCircle2, Settings, AlertTriangle, ChevronRight, Activity, RefreshCw } from 'lucide-react';
+import { Database, Search, Eye, BarChart3, CheckCircle2, Settings, AlertTriangle, ChevronRight, Activity, RefreshCw, FlaskConical, XCircle } from 'lucide-react';
 import { computeWeaknessSignals } from '@/lib/weaknessAnalysis';
 import { STUDENT_EMAILS, displayName } from '@/lib/auth';
 
@@ -163,12 +163,106 @@ function HealthTab() {
   );
 }
 
+interface QATest  { name: string; pass: boolean; detail?: string }
+interface QASuite { name: string; tests: QATest[] }
+interface QAResult { suites: QASuite[]; summary: { pass: number; fail: number; total: number }; ts: string }
+
+function QATab() {
+  const [result, setResult] = useState<QAResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+
+  const run = useCallback(async () => {
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      const r = await fetch(`${API}/api/qa-checks`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setResult(await r.json() as QAResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }, []);
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="font-semibold">QA Checks</h3>
+          <p className="text-xs text-muted mt-0.5">Runs all automated integrity checks against the live question bank and core logic.</p>
+        </div>
+        <button
+          onClick={run}
+          disabled={running}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 disabled:opacity-50 transition-colors"
+        >
+          <FlaskConical size={15} className={running ? 'animate-spin' : ''} />
+          {running ? 'Running…' : 'Run All Checks'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 text-sm mb-4">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <>
+          {/* Summary bar */}
+          <div className={`flex items-center gap-3 p-3 rounded-lg mb-5 text-sm font-semibold ${
+            result.summary.fail === 0
+              ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
+              : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+          }`}>
+            {result.summary.fail === 0
+              ? <CheckCircle2 size={16} />
+              : <XCircle size={16} />}
+            {result.summary.pass} / {result.summary.total} passed
+            {result.summary.fail > 0 && <span className="ml-1">— {result.summary.fail} failing</span>}
+            <span className="ml-auto text-xs font-normal opacity-60">{new Date(result.ts).toLocaleTimeString()}</span>
+          </div>
+
+          {/* Suites */}
+          <div className="space-y-4">
+            {result.suites.map(suite => (
+              <div key={suite.name}>
+                <p className="text-xs font-bold uppercase tracking-wider text-muted mb-2">{suite.name}</p>
+                <div className="divide-y divide-[rgb(var(--border))] rounded-lg border border-[rgb(var(--border))] overflow-hidden">
+                  {suite.tests.map(t => (
+                    <div key={t.name} className={`flex items-start gap-3 px-3 py-2 text-sm ${
+                      t.pass ? '' : 'bg-red-50 dark:bg-red-900/10'
+                    }`}>
+                      {t.pass
+                        ? <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-green-500" />
+                        : <XCircle     size={14} className="mt-0.5 shrink-0 text-red-500" />}
+                      <span className={t.pass ? '' : 'font-medium'}>{t.name}</span>
+                      {t.detail && <span className="ml-auto text-xs text-red-600 dark:text-red-400 truncate max-w-xs">{t.detail}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!result && !running && !error && (
+        <p className="text-sm text-muted text-center py-8">Click "Run All Checks" to validate the question bank and core logic.</p>
+      )}
+    </Card>
+  );
+}
+
 export default function Admin() {
   const { attempts, mockSettings, setMockSettings, profiles } = useStore();
   const [search, setSearch] = useState('');
   const [topic, setTopic] = useState<string>('all');
   const [preview, setPreview] = useState<Question | null>(null);
-  const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses' | 'health'>('questions');
+  const [activeTab, setActiveTab] = useState<'questions' | 'mock-settings' | 'weaknesses' | 'health' | 'qa'>('questions');
   const [pushedTopic, setPushedTopic] = useState<string | null>(null);
 
   const filtered = useMemo(
@@ -225,7 +319,7 @@ export default function Admin() {
 
       {/* Tab navigation */}
       <div className="flex flex-wrap gap-2 border-b border-[rgb(var(--border))]">
-        {(['questions', 'mock-settings', 'weaknesses', 'health'] as const).map((tab) => (
+        {(['questions', 'mock-settings', 'weaknesses', 'health', 'qa'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -238,12 +332,14 @@ export default function Admin() {
             {tab === 'questions' ? <><Database size={14} className="inline mr-1" />Question Bank</> :
              tab === 'mock-settings' ? <><Settings size={14} className="inline mr-1" />Mock Settings</> :
              tab === 'health' ? <><Activity size={14} className="inline mr-1" />System Health</> :
+             tab === 'qa' ? <><FlaskConical size={14} className="inline mr-1" />QA Checks</> :
              <><AlertTriangle size={14} className="inline mr-1" />Weakness Report</>}
           </button>
         ))}
       </div>
 
       {activeTab === 'health' && <HealthTab />}
+      {activeTab === 'qa' && <QATab />}
 
       {activeTab === 'mock-settings' && (
         <Card>
