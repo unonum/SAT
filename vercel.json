@@ -6,5 +6,10 @@
   "installCommand": "npm install",
   "rewrites": [
     { "source": "/((?!api/|assets/|.*\\.).*)", "destination": "/index.html" }
-  ]
+  ],
+  "functions": {
+    "api/rag-generate.ts": { "maxDuration": 60 },
+    "api/rag-ingest.ts":   { "maxDuration": 60 },
+    "api/test-session.ts": { "maxDuration": 60 }
+  }
 }
