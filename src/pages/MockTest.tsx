@@ -99,12 +99,10 @@ export default function MockTest() {
   };
 
   const buildQuestions = (excludeIds: Set<string>): Question[] | null => {
-    // excludeIds = question IDs used in *today's* earlier attempts (hard exclude — no repeats same day)
-    // globalSeen = all questions the student has ever answered (soft exclude — prefer fresh, but reuse if pool is thin)
     const globalSeen = new Set(attempts.map((a) => a.questionId));
     const settings = mockSettings ?? DEFAULT_SETTINGS;
 
-    // RAG questions: apply both hard (today) and soft (global) exclusion to maximise novelty
+    // RAG questions: exclude both today's and globally-seen for max novelty
     const ragRW = storedRag
       .filter((q) => q.section === 'Reading & Writing' && q.ragGenerated)
       .filter((q) => !excludeIds.has(q.id) && !globalSeen.has(q.id));
@@ -112,11 +110,12 @@ export default function MockTest() {
       .filter((q) => q.section === 'Math' && q.ragGenerated)
       .filter((q) => !excludeIds.has(q.id) && !globalSeen.has(q.id));
 
-    // Static fallback: only apply hard (today) exclusion — allow reuse of static bank across sessions
-    // so the pool never runs dry just because the student took previous mocks
+    // Static fallback: NO exclusion at all — these 94 questions are the last resort
+    // and must always be available regardless of attempt history. The static bank
+    // is too small (46 R&W, 48 Math) to survive any exclusion and still fill 4 modules.
     const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, settings, storedRag);
-    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !excludeIds.has(q.id));
-    const staticMath = staticAll.filter((q) => q.section === 'Math' && !excludeIds.has(q.id));
+    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing');
+    const staticMath = staticAll.filter((q) => q.section === 'Math');
 
     // Check pool health and warn admin if thin
     const availableRW = new Set([...ragRW, ...staticRW].map((q) => q.id)).size;
