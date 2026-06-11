@@ -99,15 +99,24 @@ export default function MockTest() {
   };
 
   const buildQuestions = (excludeIds: Set<string>): Question[] | null => {
+    // excludeIds = question IDs used in *today's* earlier attempts (hard exclude — no repeats same day)
+    // globalSeen = all questions the student has ever answered (soft exclude — prefer fresh, but reuse if pool is thin)
     const globalSeen = new Set(attempts.map((a) => a.questionId));
-    const exclude = new Set([...globalSeen, ...excludeIds]);
     const settings = mockSettings ?? DEFAULT_SETTINGS;
 
-    const ragRW = storedRag.filter((q) => q.section === 'Reading & Writing' && !exclude.has(q.id));
-    const ragMath = storedRag.filter((q) => q.section === 'Math' && !exclude.has(q.id));
+    // RAG questions: apply both hard (today) and soft (global) exclusion to maximise novelty
+    const ragRW = storedRag
+      .filter((q) => q.section === 'Reading & Writing' && q.ragGenerated)
+      .filter((q) => !excludeIds.has(q.id) && !globalSeen.has(q.id));
+    const ragMath = storedRag
+      .filter((q) => q.section === 'Math' && q.ragGenerated)
+      .filter((q) => !excludeIds.has(q.id) && !globalSeen.has(q.id));
+
+    // Static fallback: only apply hard (today) exclusion — allow reuse of static bank across sessions
+    // so the pool never runs dry just because the student took previous mocks
     const staticAll = selectMockQuestions(attempts, TOTAL_MOCK, settings, storedRag);
-    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !exclude.has(q.id));
-    const staticMath = staticAll.filter((q) => q.section === 'Math' && !exclude.has(q.id));
+    const staticRW = staticAll.filter((q) => q.section === 'Reading & Writing' && !excludeIds.has(q.id));
+    const staticMath = staticAll.filter((q) => q.section === 'Math' && !excludeIds.has(q.id));
 
     // Check pool health and warn admin if thin
     const availableRW = new Set([...ragRW, ...staticRW].map((q) => q.id)).size;
@@ -122,6 +131,7 @@ export default function MockTest() {
       setPoolWarning('');
     }
 
+    // Prefer RAG questions (novel), pad with static fallback
     const merge = (rag: Question[], fallback: Question[], target: number): Question[] => {
       const used = new Set(rag.map((q) => q.id));
       return [...rag, ...fallback.filter((q) => !used.has(q.id))].sort(() => Math.random() - 0.5).slice(0, target);
@@ -162,10 +172,14 @@ export default function MockTest() {
   const resume = () => {
     setError('');
     if (!storedSession) { start(); return; }
-    // Use the questions already loaded from the in-progress session's stored state
+    // Use the exact questions from the stored session so indices stay correct
+    try {
+      const qs: Question[] = JSON.parse((storedSession as unknown as { questions_json: string }).questions_json || '[]');
+      if (Array.isArray(qs) && qs.length >= 2) { setQuestions(qs); return; }
+    } catch { /* fall through to fresh build */ }
     const excluded = usedTodayIds();
     const qs = buildQuestions(excluded);
-    if (!qs) { setError('No questions available.'); return; }
+    if (!qs) { setError('No questions available — admin needs to ingest more into the RAG database.'); return; }
     setQuestions(qs);
   };
 
