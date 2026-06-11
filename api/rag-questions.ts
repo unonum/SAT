@@ -8,6 +8,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
+    if (!process.env.TURSO_DATABASE_URL) return res.status(500).json({ error: 'TURSO_DATABASE_URL env var is not set on the server.' });
+    if (!process.env.TURSO_AUTH_TOKEN) return res.status(500).json({ error: 'TURSO_AUTH_TOKEN env var is not set on the server.' });
     await ensureRagSchema();
 
     if (req.method === 'GET') {

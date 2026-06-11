@@ -168,15 +168,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  await ensureRagSchema();
+  // Validate env vars first — before any DB or AI calls — so the error message is clear
+  if (!process.env.TURSO_DATABASE_URL) return res.status(500).json({ error: 'TURSO_DATABASE_URL env var is not set on the server.' });
+  if (!process.env.TURSO_AUTH_TOKEN) return res.status(500).json({ error: 'TURSO_AUTH_TOKEN env var is not set on the server.' });
+  if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OPENAI_API_KEY env var is not set on the server.' });
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY env var is not set on the server.' });
 
   const { topic, difficulty, count = 5, section = 'Math' } = req.body ?? {};
   if (!topic || !difficulty) {
     return res.status(400).json({ error: 'topic and difficulty are required' });
   }
-
-  if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OPENAI_API_KEY env var is not set' });
-  if (!process.env.ANTHROPIC_API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY env var is not set' });
 
   // Rate limit: max 20 generation requests per IP per minute (admin tool)
   pruneRateLimitStore();
@@ -186,6 +187,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    await ensureRagSchema();
     // Fetch all chunks and find top 5 by cosine similarity
     const allChunks = await fetchAllChunks();
 
