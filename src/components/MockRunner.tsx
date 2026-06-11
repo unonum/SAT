@@ -502,7 +502,24 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   const modQs = phase === 'rw1' ? rwMod1 : phase === 'rw2' ? rwMod2 : phase === 'math1' ? mathMod1 : mathMod2;
   const curIdx = isRw ? rwIdx : mathIdx;
   const q = modQs[curIdx];
-  if (!q) return null;
+
+  // Empty module — shouldn't normally occur, but guard against it gracefully
+  if (!q || modQs.length === 0) {
+    return (
+      <div className="mx-auto max-w-md text-center py-16 space-y-4">
+        <div className="text-5xl">⚠️</div>
+        <h2 className="font-display text-xl font-bold">Not enough questions for this module</h2>
+        <p className="text-muted text-sm">
+          The question pool is too small to fill all 4 modules. An admin needs to ingest more questions via
+          the RAG Admin page, then start a new attempt.
+        </p>
+        <a href="/app/admin/rag" className="btn-primary inline-flex px-6 py-3 mt-2">
+          Go to RAG Admin →
+        </a>
+        <a href="/app/mock" className="block mt-2 text-sm text-muted hover:underline">← Back to mock hub</a>
+      </div>
+    );
+  }
 
   const isTimeLow = timer !== null && timer <= 5 * 60;
   const isTimeCritical = timer !== null && timer <= 2 * 60;
