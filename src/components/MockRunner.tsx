@@ -116,11 +116,17 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   // Same for math: subtract 22 when resuming into mod2.
   const [rwIdx, setRwIdx] = useState(() => {
     const stored = session?.rw_idx ?? 0;
-    return initPhase === 'rw2' ? Math.max(0, stored - 27) : stored;
+    const base = initPhase === 'rw2' ? Math.max(0, stored - 27) : stored;
+    // Clamp to the active module's bounds — guards against OOB when a fresh
+    // buildQuestions() produced fewer questions than the stored index expected.
+    const mod = initPhase === 'rw2' ? rwMod2 : rwMod1;
+    return mod.length > 0 ? Math.min(base, mod.length - 1) : 0;
   });
   const [mathIdx, setMathIdx] = useState(() => {
     const stored = session?.math_idx ?? 0;
-    return initPhase === 'math2' ? Math.max(0, stored - 22) : stored;
+    const base = initPhase === 'math2' ? Math.max(0, stored - 22) : stored;
+    const mod = initPhase === 'math2' ? mathMod2 : mathMod1;
+    return mod.length > 0 ? Math.min(base, mod.length - 1) : 0;
   });
   const [answers, setAnswers] = useState<Record<string, AnswerRecord>>(initAnswers);
   // Current selection before confirming navigation
@@ -521,8 +527,17 @@ export default function MockRunner({ questions, email, date, session }: Props) {
   const curIdx = isRw ? rwIdx : mathIdx;
   const q = modQs[curIdx];
 
-  // Guard: q may be undefined during a phase transition (useEffect fires after render)
-  if (!q) return null;
+  // Guard: q may be undefined during a phase transition (useEffect fires after render),
+  // or if the restored index is OOB due to a pool mismatch. Show a brief spinner
+  // rather than a blank page — the useEffect will advance the phase within one tick.
+  if (!q) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-muted text-sm">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+        <span>Loading question…</span>
+      </div>
+    );
+  }
 
   const isTimeLow = timer !== null && timer <= 5 * 60;
   const isTimeCritical = timer !== null && timer <= 2 * 60;
