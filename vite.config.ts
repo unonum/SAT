@@ -22,11 +22,11 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-charts': ['recharts'],
-          'vendor-motion': ['framer-motion'],
-          'vendor-state': ['zustand'],
+        manualChunks(id) {
+          if (['react', 'react-dom', 'react-router-dom'].some(p => id.includes(`/node_modules/${p}/`))) return 'vendor-react';
+          if (id.includes('/node_modules/recharts/'))     return 'vendor-charts';
+          if (id.includes('/node_modules/framer-motion/')) return 'vendor-motion';
+          if (id.includes('/node_modules/zustand/'))      return 'vendor-state';
         },
       },
     },
