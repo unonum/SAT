@@ -10,6 +10,7 @@ import {
 import { checkRateLimit, pruneRateLimitStore } from './_lib/rateLimit.js';
 
 export const config = { api: { bodyParser: { sizeLimit: '10mb' } } };
+export const maxDuration = 300;
 
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(a.toLowerCase().split(/\s+/));
