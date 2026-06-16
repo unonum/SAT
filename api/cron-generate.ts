@@ -146,10 +146,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   await ensureRagSchema();
 
+  // Respond immediately so cron-job.org doesn't time out (it has a 30s HTTP timeout).
+  // Vercel keeps the function alive until maxDuration (300s) even after res.end().
+  res.status(200).json({ ok: true, message: 'Generation started in background' });
+
   // Pre-fetch all chunks once (reused for every batch)
   const allChunks = await fetchAllChunks();
 
-  let OpenAI: ConstructorParameters<typeof import('openai').default>[0] extends infer T ? typeof import('openai').default : never;
   let openaiClient: import('openai').default | null = null;
   if (allChunks.length > 0) {
     const OpenAIModule = await import('openai');
@@ -232,5 +235,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   console.log(`[cron-generate] Done. Total saved: ${totalSaved}`, log);
-  return res.status(200).json({ ok: true, totalSaved, log });
+  // Response already sent above; just log the final count.
 }
