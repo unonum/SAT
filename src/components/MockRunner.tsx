@@ -158,7 +158,7 @@ export default function MockRunner({ questions, email, date, session }: Props) {
       started_at: startedAtRef.current,
       rw_started_at: rwStartedRef.current,
       math_started_at: mathStartedRef.current,
-      questions_json: JSON.stringify(questions),
+      questions_json: JSON.stringify(questions.map((q) => q.id)),
       answers_json: JSON.stringify(answers),
       phase: phaseToStored(phase),
       rw_idx: rwIdx,

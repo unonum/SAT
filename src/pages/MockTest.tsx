@@ -11,6 +11,7 @@ import { benchmarkBaseline } from '@/lib/evaluation';
 import { selectMockQuestions } from '@/lib/adaptive';
 import type { Question, MockSettings } from '@/lib/types';
 import { createNovelTestSession, fetchRagQuestions } from '@/lib/ragClient';
+import { QUESTION_BANK } from '@/lib/questionBank';
 
 const RW_COUNT = 54;
 const MATH_COUNT = 44;
@@ -58,10 +59,9 @@ export default function MockTest() {
         const inProgress = sessions.find((s) => s.status !== 'complete');
 
         if (inProgress) {
-          // Validate stored questions
-          let qs: Question[] = [];
-          try { qs = JSON.parse(inProgress.questions_json || '[]'); } catch { /* fall through */ }
-          if (Array.isArray(qs) && qs.length >= 2 && qs[0]?.prompt) {
+          // Reconstruct questions from stored IDs (or legacy full objects)
+          const qs = questionsFromJson(inProgress.questions_json, []);
+          if (qs.length >= 2) {
             setStoredRag((prev) => {
               const ex = new Set(prev.map((q) => q.id));
               return [...prev, ...qs.filter((q) => !ex.has(q.id))];
@@ -85,14 +85,31 @@ export default function MockTest() {
       .catch(() => setSessionState('none'));
   }, [remoteEnabled, user?.email, today]);
 
-  /** IDs of every question used in today's completed attempts. */
+  /** Reconstruct Question objects from a questions_json that stores either IDs or full objects. */
+  const questionsFromJson = (json: string, rag: Question[]): Question[] => {
+    try {
+      const parsed = JSON.parse(json || '[]');
+      if (!Array.isArray(parsed) || parsed.length === 0) return [];
+      // New format: array of string IDs
+      if (typeof parsed[0] === 'string') {
+        const bankById = new Map([...QUESTION_BANK, ...rag].map((q) => [q.id, q]));
+        return parsed.map((id: string) => bankById.get(id)).filter(Boolean) as Question[];
+      }
+      // Legacy format: full Question objects
+      return parsed as Question[];
+    } catch { return []; }
+  };
+
+  /** IDs of every question used in today's completed sessions. */
   const usedTodayIds = (): Set<string> => {
     const ids = new Set<string>();
     for (const s of todaySessions) {
       if (s.status !== 'complete') continue;
       try {
-        const qs: Question[] = JSON.parse(s.questions_json || '[]');
-        qs.forEach((q) => ids.add(q.id));
+        const parsed = JSON.parse(s.questions_json || '[]');
+        if (Array.isArray(parsed)) {
+          parsed.forEach((item) => ids.add(typeof item === 'string' ? item : item?.id));
+        }
       } catch { /* ignore */ }
     }
     return ids;
