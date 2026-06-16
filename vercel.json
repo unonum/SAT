@@ -12,12 +12,6 @@
     "api/rag-ingest.ts":    { "maxDuration": 300 },
     "api/cron-generate.ts": { "maxDuration": 300 },
     "api/test-session.ts":  { "maxDuration": 60 }
-  },
-  "crons": [
-    {
-      "path": "/api/cron-generate",
-      "schedule": "0 0 * * *"
-    }
-  ]
+  }
 }
 
