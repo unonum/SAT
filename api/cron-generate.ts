@@ -128,7 +128,7 @@ async function generateWithAnthropic(
 // ── Main handler ────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Allow Vercel Cron (Authorization header) or explicit secret query param
+  // Optional secret check — only enforced when CRON_SECRET env var is set
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
     const authHeader = req.headers['authorization'];
@@ -136,7 +136,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const valid =
       authHeader === `Bearer ${cronSecret}` ||
       querySecret === cronSecret;
-    if (!valid) return res.status(401).json({ error: 'Unauthorized' });
+    if (!valid) return res.status(401).json({ error: 'Unauthorized — set ?secret= matching your CRON_SECRET env var, or leave CRON_SECRET unset to allow open access.' });
   }
 
   if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN ||
