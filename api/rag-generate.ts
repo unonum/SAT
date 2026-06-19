@@ -220,11 +220,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contextText = `General SAT content for ${topic} at ${difficulty} level.`;
     }
 
-    // Load existing questions for this topic to avoid regenerating duplicates
     const existing = await fetchRagQuestions({ topic, difficulty });
-    // Use passage+prompt combined as the fingerprint — vocab/grammar questions
-    // share structural prompt templates but differ in passage content.
-    const existingFingerprints = existing.map((q) => `${q.passage ?? ''} ${q.prompt}`.trim());
 
     // Generate from both models in parallel
     const [openaiQuestions, anthropicQuestions] = await Promise.allSettled([
@@ -241,11 +237,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // but different passages/target words aren't wrongly discarded.
     const dedupedBatch = deduplicateQuestions(rawAll);
     const sectionCorrect = dedupedBatch.filter((q) => !q.section || q.section === section);
-    const deduped = sectionCorrect.filter((q) => {
-      if (!q.prompt) return false;
-      const fp = `${q.passage ?? ''} ${q.prompt}`.trim();
-      return !existingFingerprints.some((ef) => wordOverlap(ef, fp) > 0.85);
-    });
+    const deduped = sectionCorrect.filter((q) => !!q.prompt);
     const now = Date.now();
 
     const saved: RagQuestionRow[] = [];
