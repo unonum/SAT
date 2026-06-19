@@ -32,10 +32,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           /\bcoordinate plane\b/i, /\bgraphed (above|below|on)\b/i,
           /\bthe plot\b/i, /\bplotted (above|below|on)\b/i,
           /\bthe following (table|graph|chart|figure|diagram|data)\b/i,
+          // Passage referenced but not provided
+          /\bthe passage\b/i, /\bthe text\b/i, /\bthe excerpt\b/i, /\bthe paragraph\b/i,
+          /\bthe author\b/i, /\bthe underlined (portion|word|phrase)\b/i,
+          /\bin (the )?context of the passage\b/i, /\bbased on the passage\b/i,
+          /\baccording to the (passage|text|author)\b/i, /\bthe narrator\b/i,
+          /\bthe sentence above\b/i, /\bthe (preceding|following) sentence\b/i,
         ];
         const all = await fetchRagQuestions();
+        // A question is broken if it references external content (visual or passage)
+        // but has no real passage (< 15 chars) to back it up.
         const broken = all.filter(
-          (q) => !q.passage?.trim() && BROKEN_PATTERNS.some((re) => re.test(q.prompt))
+          (q) => (q.passage ?? '').trim().length < 15 && BROKEN_PATTERNS.some((re) => re.test(q.prompt))
         );
         for (const q of broken) await deleteRagQuestion(q.id);
         return res.status(200).json({ ok: true, deleted: broken.length, ids: broken.map((q) => q.id) });

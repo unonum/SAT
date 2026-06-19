@@ -33,6 +33,19 @@ function deduplicateQuestions(questions: RawQuestion[]): RawQuestion[] {
   return unique;
 }
 
+/**
+ * A question is invalid if its prompt refers to reading content
+ * ("the passage", "the text", "the author", an underlined portion, etc.)
+ * but no passage was actually provided. Such questions are unanswerable.
+ */
+const PASSAGE_REFERENCE = /\b(the passage|the text|the excerpt|the paragraph|the author|the underlined (portion|word|phrase)|the sentence above|the preceding sentence|the following sentence|in context of the passage|in the context of the passage|based on the passage|according to the (passage|text|author)|the author's claim|the narrator|the speaker's)\b/i;
+
+function needsPassageButHasNone(q: RawQuestion): boolean {
+  const passage = (q.passage ?? '').trim();
+  if (passage.length >= 15) return false; // real passage present
+  return PASSAGE_REFERENCE.test(q.prompt ?? '');
+}
+
 interface RawQuestion {
   id?: string;
   topic?: string;
@@ -133,6 +146,7 @@ CRITICAL RULES:
 1. Return ONLY valid JSON array, no markdown, no explanation.
 2. SECTION RULE: Every question's "section" field MUST be "${section}". Do NOT generate Math-style calculation questions for Reading & Writing, and do NOT generate reading/grammar questions for Math.
 3. SELF-CONTAINED (MANDATORY): Every question must be fully answerable from ONLY the text in "prompt" and "passage". NEVER reference a line graph, bar chart, scatter plot, pie chart, histogram, coordinate plane, table, figure, diagram, or any visual that is not fully reproduced as plain text in "passage". If the question needs data, include the COMPLETE data as plain text in "passage". If no external content is needed, set passage to null. Questions that mention "the line graph shows..." or "based on the graph..." without including that data in passage are INVALID and will be deleted.
+4. PASSAGE REQUIRED WHEN REFERENCED (MANDATORY): If the "prompt" refers to "the passage", "the text", "the excerpt", "the author", "the underlined portion", a quoted word "in context", or any sentence/paragraph the student must read, then the FULL reading passage MUST be provided in the "passage" field. For vocabulary-in-context questions, "passage" must contain the complete sentence(s) showing the word in use. For grammar/editing questions, "passage" must contain the sentence being edited. A prompt that says "In the context of the passage..." or "what does the word X most nearly mean" with passage=null is INVALID and will be discarded. NEVER write a question about a passage without including that passage.
 Each question must follow this exact schema:
 {
   "id": "rag-${topic}-${ts}-0",
@@ -238,6 +252,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const deduped = dedupedBatch
       .filter((q) => !q.section || q.section === section)
       .filter((q) => !!q.prompt && !!q.choices && !!q.correct)
+      .filter((q) => !needsPassageButHasNone(q))  // drop questions that cite a passage that isn't there
       .slice(0, count);  // cap at exactly what was requested
     const now = Date.now();
 

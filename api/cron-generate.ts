@@ -82,6 +82,14 @@ function dedup(qs: RawQuestion[]): RawQuestion[] {
   return unique;
 }
 
+const PASSAGE_REFERENCE = /\b(the passage|the text|the excerpt|the paragraph|the author|the underlined (portion|word|phrase)|the sentence above|the preceding sentence|the following sentence|in context of the passage|in the context of the passage|based on the passage|according to the (passage|text|author)|the author's claim|the narrator|the speaker's)\b/i;
+
+function needsPassageButHasNone(q: RawQuestion): boolean {
+  const passage = (q.passage ?? '').trim();
+  if (passage.length >= 15) return false;
+  return PASSAGE_REFERENCE.test(q.prompt ?? '');
+}
+
 function buildPrompt(
   topic: string, difficulty: string, count: number, section: string,
   contextText: string, existingCount: number,
@@ -111,8 +119,9 @@ ${noveltyNote}
 OTHER RULES:
 1. Return ONLY a valid JSON array — no markdown, no explanation, no preamble.
 2. SELF-CONTAINED: Every question must be fully answerable from only "prompt" and "passage". Never reference a graph, chart, table, or figure that isn't fully reproduced as plain text in "passage". Set passage to null if no external content is needed.
-3. Each question must have exactly 4 choices (A, B, C, D) with one correct answer.
-4. The explanation must be detailed and helpful for a student who got it wrong.
+3. PASSAGE REQUIRED WHEN REFERENCED: If the prompt mentions "the passage", "the text", "the author", "the underlined portion", or a word "in context", the FULL passage MUST be in the "passage" field. For vocabulary-in-context, "passage" must contain the sentence(s) using the word. For grammar/editing, "passage" must contain the sentence being edited. A prompt referencing a passage with passage=null is INVALID and will be discarded.
+4. Each question must have exactly 4 choices (A, B, C, D) with one correct answer.
+5. The explanation must be detailed and helpful for a student who got it wrong.
 
 JSON schema (return an array of these):
 {
@@ -192,6 +201,7 @@ async function runGeneration(topic: string, section: string, difficulty: string)
   const novel = dedup(raw)
     .filter((q) => !q.section || q.section === section)
     .filter((q) => !!q.prompt && !!q.choices && !!q.correct)
+    .filter((q) => !needsPassageButHasNone(q))  // drop questions that cite a passage that isn't there
     .slice(0, COUNT_PER_BATCH);
 
   const now = Date.now();
