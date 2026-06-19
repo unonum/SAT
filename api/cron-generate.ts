@@ -44,7 +44,7 @@ const BATCHES: Array<{ topic: string; section: string; difficulty: string }> = [
   { topic: 'rhetoric-expression',   section: 'Reading & Writing', difficulty: 'hard'   },
 ];
 
-const COUNT_PER_BATCH = 5;
+const COUNT_PER_BATCH = 10;
 
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(a.toLowerCase().split(/\s+/));
@@ -148,26 +148,11 @@ async function generateWithOpenAI(
   const OpenAI = (await import('openai')).default;
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const resp = await openai.chat.completions.create({
-    model: 'gpt-4o-2024-11-20',
+    model: 'gpt-4o-mini',  // fast (~5s), fits within 30s cron timeout
     messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
     temperature: 0.8,
   });
   return parseQuestionsFromText(resp.choices[0]?.message?.content ?? '');
-}
-
-async function generateWithAnthropic(
-  topic: string, difficulty: string, count: number, section: string,
-  contextText: string, existingCount: number,
-): Promise<RawQuestion[]> {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const resp = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6-20251001',
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
-  });
-  const content = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
-  return parseQuestionsFromText(content);
 }
 
 async function runGeneration(topic: string, section: string, difficulty: string): Promise<void> {
@@ -198,15 +183,9 @@ async function runGeneration(topic: string, section: string, difficulty: string)
   const existing = await fetchRagQuestions({ topic, difficulty });
   const existingPrompts = existing.map((q) => q.prompt);
 
-  // Both models in parallel for quality and quantity
-  const [oaiResult, anthropicResult] = await Promise.allSettled([
-    generateWithOpenAI(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
-    generateWithAnthropic(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
-  ]);
-
-  const raw: RawQuestion[] = [];
-  if (oaiResult.status === 'fulfilled') raw.push(...oaiResult.value);
-  if (anthropicResult.status === 'fulfilled') raw.push(...anthropicResult.value);
+    // gpt-4o-mini for cron: completes in ~5s, fits within cron-job.org's 30s limit.
+  // Full quality (gpt-4o + Claude) is reserved for manual generation in the Admin UI.
+  const raw = await generateWithOpenAI(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length);
 
   const dedupedBatch = dedup(raw);
 
