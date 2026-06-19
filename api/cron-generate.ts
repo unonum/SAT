@@ -268,21 +268,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { topic, section, difficulty } = BATCHES[hourIndex];
 
-  // Respond immediately so cron-job.org (30s timeout) sees 200 OK right away.
-  // Vercel keeps the Node.js function alive up to maxDuration (300s) to finish.
-  res.status(200).json({
-    ok: true,
-    message: `Generating ${COUNT_PER_BATCH * 2} ${section} questions for ${topic}/${difficulty} in background…`,
-    batch: hourIndex,
-    topic,
-    section,
-    difficulty,
-  });
-
-  // Background generation — runs after response is sent
   try {
     await runGeneration(topic, section, difficulty);
+    return res.status(200).json({
+      ok: true,
+      batch: hourIndex,
+      topic,
+      section,
+      difficulty,
+      message: `Generation complete`,
+    });
   } catch (err) {
-    console.error('[cron-generate] background generation failed:', err);
+    console.error('[cron-generate] error:', err);
+    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
