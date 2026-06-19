@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   ensureRagSchema,
+  countChunks,
   fetchAllChunks,
   fetchRagQuestions,
   upsertRagQuestion,
@@ -189,13 +190,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     await ensureRagSchema();
-    // Fetch all chunks and find top 5 by cosine similarity
-    const allChunks = await fetchAllChunks();
 
     let contextText = '';
     let topChunkId: string | null = null;
 
-    if (allChunks.length > 0) {
+    // countChunks() is cheap (COUNT(*)); only pull full embeddings when chunks exist
+    const chunkCount = await countChunks();
+    if (chunkCount > 0) {
+      const allChunks = await fetchAllChunks();
       const OpenAI = (await import('openai')).default;
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 

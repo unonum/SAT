@@ -8,6 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   ensureRagSchema,
+  countChunks,
   fetchAllChunks,
   fetchRagQuestions,
   upsertRagQuestion,
@@ -158,12 +159,14 @@ async function generateWithOpenAI(
 async function runGeneration(topic: string, section: string, difficulty: string): Promise<void> {
   await ensureRagSchema();
 
-  // Find top-5 relevant chunks (skip if no PDFs uploaded yet)
+  // Only load chunks if PDFs have been uploaded — fetchAllChunks pulls full
+  // embeddings (1536 floats each) which exhausts Turso's hrana response buffer.
+  // countChunks() is a cheap COUNT(*) query; fetchAllChunks only runs when needed.
   let contextText = `General SAT content for ${topic} at ${difficulty} level.`;
   let topChunkId: string | null = null;
 
-  const allChunks = await fetchAllChunks();
-  if (allChunks.length > 0) {
+  const chunkCount = await countChunks();
+  if (chunkCount > 0) {
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const queryEmbedding = (await openai.embeddings.create({
@@ -171,6 +174,7 @@ async function runGeneration(topic: string, section: string, difficulty: string)
       input: [`SAT ${topic} ${difficulty} questions ${section}`],
     })).data[0].embedding;
 
+    const allChunks = await fetchAllChunks();
     const top5 = allChunks
       .map((c) => ({ ...c, score: cosineSimilarity(queryEmbedding, c.embedding) }))
       .sort((a, b) => b.score - a.score)

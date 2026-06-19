@@ -115,6 +115,12 @@ export async function upsertChunkBatch(chunks: ChunkRow[]): Promise<void> {
   }
 }
 
+export async function countChunks(): Promise<number> {
+  const db = getClient();
+  const result = await db.execute(`SELECT COUNT(*) as n FROM rag_chunks`);
+  return Number(result.rows[0]?.n ?? 0);
+}
+
 export async function fetchAllChunks(): Promise<Array<{ id: string; content: string; embedding: number[] }>> {
   const db = getClient();
   const result = await db.execute(`SELECT id, content, embedding FROM rag_chunks`);
