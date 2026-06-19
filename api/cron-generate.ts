@@ -47,7 +47,8 @@ const BATCHES: Array<{ topic: string; section: string; difficulty: string }> = [
   { topic: 'rhetoric-expression',   section: 'Reading & Writing',  difficulty: 'hard'   },
 ];
 
-const COUNT_PER_BATCH = 5;
+// Use gpt-4o-mini for cron (fast, ~3s per call vs ~15s for gpt-4o)
+const COUNT_PER_BATCH = 8;
 
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(a.toLowerCase().split(/\s+/));
@@ -106,33 +107,19 @@ Context material:
 ${contextText}`;
 }
 
-async function generateWithOpenAI(
+// Single fast model for cron (gpt-4o-mini: ~3s vs gpt-4o ~15s)
+async function generateQuestions(
   topic: string, difficulty: string, count: number, section: string,
   contextText: string, existingCount: number,
 ): Promise<RawQuestion[]> {
   const OpenAI = (await import('openai')).default;
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const resp = await openai.chat.completions.create({
-    model: 'gpt-4o-2024-11-20',
+    model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
     temperature: 0.8,
   });
   return parseQuestionsFromText(resp.choices[0]?.message?.content ?? '');
-}
-
-async function generateWithAnthropic(
-  topic: string, difficulty: string, count: number, section: string,
-  contextText: string, existingCount: number,
-): Promise<RawQuestion[]> {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const resp = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6-20251001',
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
-  });
-  const content = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
-  return parseQuestionsFromText(content);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -162,12 +149,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     await ensureRagSchema();
 
-    // Find top-5 relevant chunks for this topic
+    // Skip chunk lookup if no PDFs have been uploaded — saves ~2s per run
     let contextText = `General SAT content for ${topic} at ${difficulty} level.`;
     let topChunkId: string | null = null;
 
     const allChunks = await fetchAllChunks();
     if (allChunks.length > 0) {
+      // Use gpt-4o-mini for embeddings lookup too (same key, cheaper)
       const OpenAI = (await import('openai')).default;
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const queryEmbedding = (await openai.embeddings.create({
@@ -187,14 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const existing = await fetchRagQuestions({ topic, difficulty });
     const existingPrompts = existing.map((q) => q.prompt);
 
-    const [oaiResult, anthropicResult] = await Promise.allSettled([
-      generateWithOpenAI(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
-      generateWithAnthropic(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
-    ]);
-
-    const raw: RawQuestion[] = [];
-    if (oaiResult.status === 'fulfilled') raw.push(...oaiResult.value);
-    if (anthropicResult.status === 'fulfilled') raw.push(...anthropicResult.value);
+    const raw = await generateQuestions(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length);
 
     const novel = dedup(raw).filter(
       (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
