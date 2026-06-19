@@ -410,6 +410,7 @@ function LibraryTab() {
   const [loading, setLoading] = useState(true);
   const [filterTopic, setFilterTopic] = useState('');
   const [filterDiff, setFilterDiff] = useState('');
+  const [sortAsc, setSortAsc] = useState(false); // newest first by default
   const [deleting, setDeleting] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
@@ -508,12 +509,26 @@ function LibraryTab() {
                 <th className="pb-2 pr-3">Difficulty</th>
                 <th className="pb-2 pr-3 max-w-[250px]">Prompt</th>
                 <th className="pb-2 pr-3">Source Chunk</th>
-                <th className="pb-2 pr-3">Created</th>
+                <th className="pb-2 pr-3">
+                  <button
+                    className="flex items-center gap-1 hover:text-foreground transition-colors"
+                    onClick={() => setSortAsc((p) => !p)}
+                    title="Toggle sort order"
+                  >
+                    Created {sortAsc ? '↑' : '↓'}
+                  </button>
+                </th>
                 <th className="pb-2" />
               </tr>
             </thead>
             <tbody>
-              {questions.map((q) => (
+              {[...questions]
+                .map((q) => ({
+                  q,
+                  ts: parseInt(q.id.match(/\d{13}/)?.[0] ?? '0'),
+                }))
+                .sort((a, b) => sortAsc ? a.ts - b.ts : b.ts - a.ts)
+                .map(({ q, ts }) => (
                 <tr key={q.id} className="border-b border-[rgb(var(--border))] last:border-0">
                   <td className="py-2 pr-3 font-mono text-[10px] text-muted max-w-[100px] truncate">{q.id}</td>
                   <td className="py-2 pr-3">{q.topic}</td>
@@ -523,9 +538,8 @@ function LibraryTab() {
                     {q.sourceChunk ?? '—'}
                   </td>
                   <td className="py-2 pr-3 text-muted whitespace-nowrap">
-                    {/* created_at not on Question type, approximate */}
-                    {q.id.match(/\d{13}/)
-                      ? new Date(parseInt(q.id.match(/\d{13}/)![0])).toLocaleDateString()
+                    {ts > 0
+                      ? new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                       : '—'}
                   </td>
                   <td className="py-2">
@@ -541,6 +555,7 @@ function LibraryTab() {
               ))}
             </tbody>
           </table>
+          <p className="text-[10px] text-muted mt-2">{questions.length} questions — click "Created ↓" header to toggle sort order</p>
         </Card>
       )}
     </div>
