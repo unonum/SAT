@@ -234,7 +234,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Deduplicate within batch AND against existing DB questions
     const dedupedBatch = deduplicateQuestions(rawAll);
-    const deduped = dedupedBatch.filter(
+    // Hard filter: discard questions where model put the wrong section
+    const sectionCorrect = dedupedBatch.filter((q) => !q.section || q.section === section);
+    const deduped = sectionCorrect.filter(
       (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
     );
     const now = Date.now();
@@ -248,7 +250,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id: `rag-${topic}-${now}-${i}`,
         topic: raw.topic ?? topic,
         subtopic: raw.subtopic ?? topic,
-        section: raw.section ?? section,
+        section,  // always use the requested section, not what the model returned
         difficulty: raw.difficulty ?? difficulty,
         passage: raw.passage ?? null,
         prompt: raw.prompt,

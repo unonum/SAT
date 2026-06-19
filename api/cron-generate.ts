@@ -1,10 +1,8 @@
 /**
- * Hourly cron job — generates ~10 fresh SAT questions per run.
- * Cycles through all 24 topic/difficulty combinations using the current UTC hour.
- * Run every hour via cron-job.org: schedule "0 * * * *"
- * After 24 hours: all topics and difficulties are covered (~240 new questions/day).
- *
- * Each run completes in ~20s (two LLM calls in parallel), well within cron-job.org's 30s timeout.
+ * Hourly cron — generates ~10 fresh SAT questions per run using gpt-4o + Claude.
+ * Responds 200 immediately (so cron-job.org doesn't time out at 30s).
+ * Vercel keeps the function alive up to maxDuration (300s) to finish generation.
+ * Cycles through 24 topic/difficulty combos, one per UTC hour.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -17,38 +15,36 @@ import {
   type RagQuestionRow,
 } from './_lib/turso.js';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
-// 24 batches — one per hour of the day
 const BATCHES: Array<{ topic: string; section: string; difficulty: string }> = [
-  { topic: 'algebra',               section: 'Math',               difficulty: 'easy'   },
-  { topic: 'algebra',               section: 'Math',               difficulty: 'medium' },
-  { topic: 'algebra',               section: 'Math',               difficulty: 'hard'   },
-  { topic: 'advanced-math',         section: 'Math',               difficulty: 'easy'   },
-  { topic: 'advanced-math',         section: 'Math',               difficulty: 'medium' },
-  { topic: 'advanced-math',         section: 'Math',               difficulty: 'hard'   },
-  { topic: 'problem-solving-data',  section: 'Math',               difficulty: 'easy'   },
-  { topic: 'problem-solving-data',  section: 'Math',               difficulty: 'medium' },
-  { topic: 'problem-solving-data',  section: 'Math',               difficulty: 'hard'   },
-  { topic: 'geometry-trig',         section: 'Math',               difficulty: 'easy'   },
-  { topic: 'geometry-trig',         section: 'Math',               difficulty: 'medium' },
-  { topic: 'geometry-trig',         section: 'Math',               difficulty: 'hard'   },
-  { topic: 'reading-comprehension', section: 'Reading & Writing',  difficulty: 'easy'   },
-  { topic: 'reading-comprehension', section: 'Reading & Writing',  difficulty: 'medium' },
-  { topic: 'reading-comprehension', section: 'Reading & Writing',  difficulty: 'hard'   },
-  { topic: 'vocabulary-in-context', section: 'Reading & Writing',  difficulty: 'easy'   },
-  { topic: 'vocabulary-in-context', section: 'Reading & Writing',  difficulty: 'medium' },
-  { topic: 'vocabulary-in-context', section: 'Reading & Writing',  difficulty: 'hard'   },
-  { topic: 'grammar',               section: 'Reading & Writing',  difficulty: 'easy'   },
-  { topic: 'grammar',               section: 'Reading & Writing',  difficulty: 'medium' },
-  { topic: 'grammar',               section: 'Reading & Writing',  difficulty: 'hard'   },
-  { topic: 'rhetoric-expression',   section: 'Reading & Writing',  difficulty: 'easy'   },
-  { topic: 'rhetoric-expression',   section: 'Reading & Writing',  difficulty: 'medium' },
-  { topic: 'rhetoric-expression',   section: 'Reading & Writing',  difficulty: 'hard'   },
+  { topic: 'algebra',               section: 'Math',              difficulty: 'easy'   },
+  { topic: 'algebra',               section: 'Math',              difficulty: 'medium' },
+  { topic: 'algebra',               section: 'Math',              difficulty: 'hard'   },
+  { topic: 'advanced-math',         section: 'Math',              difficulty: 'easy'   },
+  { topic: 'advanced-math',         section: 'Math',              difficulty: 'medium' },
+  { topic: 'advanced-math',         section: 'Math',              difficulty: 'hard'   },
+  { topic: 'problem-solving-data',  section: 'Math',              difficulty: 'easy'   },
+  { topic: 'problem-solving-data',  section: 'Math',              difficulty: 'medium' },
+  { topic: 'problem-solving-data',  section: 'Math',              difficulty: 'hard'   },
+  { topic: 'geometry-trig',         section: 'Math',              difficulty: 'easy'   },
+  { topic: 'geometry-trig',         section: 'Math',              difficulty: 'medium' },
+  { topic: 'geometry-trig',         section: 'Math',              difficulty: 'hard'   },
+  { topic: 'reading-comprehension', section: 'Reading & Writing', difficulty: 'easy'   },
+  { topic: 'reading-comprehension', section: 'Reading & Writing', difficulty: 'medium' },
+  { topic: 'reading-comprehension', section: 'Reading & Writing', difficulty: 'hard'   },
+  { topic: 'vocabulary-in-context', section: 'Reading & Writing', difficulty: 'easy'   },
+  { topic: 'vocabulary-in-context', section: 'Reading & Writing', difficulty: 'medium' },
+  { topic: 'vocabulary-in-context', section: 'Reading & Writing', difficulty: 'hard'   },
+  { topic: 'grammar',               section: 'Reading & Writing', difficulty: 'easy'   },
+  { topic: 'grammar',               section: 'Reading & Writing', difficulty: 'medium' },
+  { topic: 'grammar',               section: 'Reading & Writing', difficulty: 'hard'   },
+  { topic: 'rhetoric-expression',   section: 'Reading & Writing', difficulty: 'easy'   },
+  { topic: 'rhetoric-expression',   section: 'Reading & Writing', difficulty: 'medium' },
+  { topic: 'rhetoric-expression',   section: 'Reading & Writing', difficulty: 'hard'   },
 ];
 
-// Use gpt-4o-mini for cron (fast, ~3s per call vs ~15s for gpt-4o)
-const COUNT_PER_BATCH = 8;
+const COUNT_PER_BATCH = 5;
 
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(a.toLowerCase().split(/\s+/));
@@ -90,42 +86,168 @@ function buildPrompt(
   contextText: string, existingCount: number,
 ): string {
   const ts = Date.now();
+  const isMath = section === 'Math';
+  const sectionGuidance = isMath
+    ? 'Math questions only: algebra, equations, geometry, data analysis, word problems with numbers. NO grammar, vocabulary, reading passages, or writing skills.'
+    : 'Reading & Writing questions only: reading comprehension, vocabulary in context, grammar/usage, rhetorical analysis. NO arithmetic, algebra, or math calculations.';
+
   const noveltyNote = existingCount > 0
-    ? `IMPORTANT: There are already ${existingCount} questions for this topic/difficulty. Generate completely NEW questions testing DIFFERENT concepts.`
+    ? `IMPORTANT: There are already ${existingCount} questions for this topic/difficulty. Generate completely NEW questions testing DIFFERENT concepts, scenarios, and passages.`
     : '';
-  return `You are an expert SAT question writer. Generate exactly ${count} novel SAT-style questions for topic "${topic}" at "${difficulty}" difficulty for the "${section}" section. ${noveltyNote}
 
-CRITICAL RULES:
-1. Return ONLY a valid JSON array — no markdown, no explanation.
-2. Every question's "section" field MUST be "${section}".
-3. SELF-CONTAINED: Every question must be fully answerable from only "prompt" and "passage". Never reference a graph, chart, table, or figure that isn't reproduced as plain text in "passage". Set passage to null if no external content is needed.
+  return `You are an expert SAT question writer for the Digital SAT. Generate exactly ${count} original SAT-style questions.
 
-Schema:
-{"id":"rag-${topic}-${ts}-0","topic":"${topic}","subtopic":"specific subtopic","section":"${section}","difficulty":"${difficulty}","passage":null,"prompt":"...","choices":[{"id":"A","text":"..."},{"id":"B","text":"..."},{"id":"C","text":"..."},{"id":"D","text":"..."}],"correct":"A","parTimeSec":60,"explanation":{"correctWhy":"...","fastStrategy":"...","simplerView":"...","trapNote":"...","timeTrick":"...","whyWrong":{"A":"...","B":"...","C":"...","D":"..."}},"sourceChunk":null}
+TOPIC: ${topic}
+DIFFICULTY: ${difficulty}
+SECTION: ${section}
 
-Context material:
-${contextText}`;
+SECTION RULE (CRITICAL — violations are discarded):
+${sectionGuidance}
+Every question's "section" field MUST be exactly "${section}". Questions with the wrong section will be deleted.
+
+${noveltyNote}
+
+OTHER RULES:
+1. Return ONLY a valid JSON array — no markdown, no explanation, no preamble.
+2. SELF-CONTAINED: Every question must be fully answerable from only "prompt" and "passage". Never reference a graph, chart, table, or figure that isn't fully reproduced as plain text in "passage". Set passage to null if no external content is needed.
+3. Each question must have exactly 4 choices (A, B, C, D) with one correct answer.
+4. The explanation must be detailed and helpful for a student who got it wrong.
+
+JSON schema (return an array of these):
+{
+  "topic": "${topic}",
+  "subtopic": "specific subtopic within ${topic}",
+  "section": "${section}",
+  "difficulty": "${difficulty}",
+  "passage": null,
+  "prompt": "The question stem goes here.",
+  "choices": [{"id":"A","text":"..."},{"id":"B","text":"..."},{"id":"C","text":"..."},{"id":"D","text":"..."}],
+  "correct": "A",
+  "parTimeSec": 60,
+  "explanation": {
+    "correctWhy": "Why the correct answer is right.",
+    "fastStrategy": "A quick approach to solve this.",
+    "simplerView": "Explain it simply.",
+    "trapNote": "Common trap students fall into.",
+    "timeTrick": "Time-saving tip.",
+    "whyWrong": {"A":"Why A is wrong","B":"Why B is wrong","C":"Why C is wrong","D":"Why D is wrong"}
+  },
+  "sourceChunk": null
 }
 
-// Single fast model for cron (gpt-4o-mini: ~3s vs gpt-4o ~15s)
-async function generateQuestions(
+Context material:
+${contextText}
+
+Generate the JSON array of ${count} questions now (id field is not needed):`;
+}
+
+async function generateWithOpenAI(
   topic: string, difficulty: string, count: number, section: string,
   contextText: string, existingCount: number,
 ): Promise<RawQuestion[]> {
   const OpenAI = (await import('openai')).default;
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const resp = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o-2024-11-20',
     messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
     temperature: 0.8,
   });
   return parseQuestionsFromText(resp.choices[0]?.message?.content ?? '');
 }
 
+async function generateWithAnthropic(
+  topic: string, difficulty: string, count: number, section: string,
+  contextText: string, existingCount: number,
+): Promise<RawQuestion[]> {
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const resp = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6-20251001',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: buildPrompt(topic, difficulty, count, section, contextText, existingCount) }],
+  });
+  const content = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
+  return parseQuestionsFromText(content);
+}
+
+async function runGeneration(topic: string, section: string, difficulty: string): Promise<void> {
+  await ensureRagSchema();
+
+  // Find top-5 relevant chunks (skip if no PDFs uploaded yet)
+  let contextText = `General SAT content for ${topic} at ${difficulty} level.`;
+  let topChunkId: string | null = null;
+
+  const allChunks = await fetchAllChunks();
+  if (allChunks.length > 0) {
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const queryEmbedding = (await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: [`SAT ${topic} ${difficulty} questions ${section}`],
+    })).data[0].embedding;
+
+    const top5 = allChunks
+      .map((c) => ({ ...c, score: cosineSimilarity(queryEmbedding, c.embedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+    contextText = top5.map((c) => c.content).join('\n\n---\n\n');
+    topChunkId = top5[0]?.id ?? null;
+  }
+
+  const existing = await fetchRagQuestions({ topic, difficulty });
+  const existingPrompts = existing.map((q) => q.prompt);
+
+  // Both models in parallel for quality and quantity
+  const [oaiResult, anthropicResult] = await Promise.allSettled([
+    generateWithOpenAI(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
+    generateWithAnthropic(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length),
+  ]);
+
+  const raw: RawQuestion[] = [];
+  if (oaiResult.status === 'fulfilled') raw.push(...oaiResult.value);
+  if (anthropicResult.status === 'fulfilled') raw.push(...anthropicResult.value);
+
+  const dedupedBatch = dedup(raw);
+
+  // Hard filter: discard any question with the wrong section
+  const sectionCorrect = dedupedBatch.filter(
+    (q) => !q.section || q.section === section
+  );
+
+  const novel = sectionCorrect.filter(
+    (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
+  );
+
+  const now = Date.now();
+  let saved = 0;
+  for (let i = 0; i < novel.length; i++) {
+    const q = novel[i];
+    if (!q.prompt || !q.choices || !q.correct) continue;
+    await upsertRagQuestion({
+      id: `rag-${topic}-${now}-${i}`,
+      topic: q.topic ?? topic,
+      subtopic: q.subtopic ?? topic,
+      section,  // always use the expected section, not what the model returned
+      difficulty: q.difficulty ?? difficulty,
+      passage: q.passage ?? null,
+      prompt: q.prompt,
+      choices: typeof q.choices === 'string' ? q.choices : JSON.stringify(q.choices),
+      correct: q.correct,
+      par_time_sec: (q.parTimeSec as number) ?? 60,
+      explanation: typeof q.explanation === 'string' ? q.explanation : JSON.stringify(q.explanation ?? {}),
+      source_chunk: q.sourceChunk ?? topChunkId,
+      created_at: now,
+    } as RagQuestionRow);
+    saved++;
+  }
+
+  console.log(`[cron-generate] ${topic}/${difficulty}/${section}: generated ${raw.length}, section-filtered ${dedupedBatch.length - sectionCorrect.length}, saved ${saved}`);
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  // Optional secret check
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
     const valid =
@@ -136,79 +258,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN ||
       !process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'Missing required env vars' });
+    return res.status(500).json({ error: 'Missing required env vars (TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, OPENAI_API_KEY, ANTHROPIC_API_KEY)' });
   }
 
-  // Pick which batch to run based on current UTC hour (cycles every 24 hours)
-  const hourIndex = req.query.batch
+  // Pick batch by UTC hour — cycles all 24 combos over 24 hours
+  const hourIndex = req.query.batch !== undefined
     ? Number(req.query.batch) % BATCHES.length
     : new Date().getUTCHours() % BATCHES.length;
 
   const { topic, section, difficulty } = BATCHES[hourIndex];
 
+  // Respond immediately so cron-job.org (30s timeout) sees 200 OK right away.
+  // Vercel keeps the Node.js function alive up to maxDuration (300s) to finish.
+  res.status(200).json({
+    ok: true,
+    message: `Generating ${COUNT_PER_BATCH * 2} ${section} questions for ${topic}/${difficulty} in background…`,
+    batch: hourIndex,
+    topic,
+    section,
+    difficulty,
+  });
+
+  // Background generation — runs after response is sent
   try {
-    await ensureRagSchema();
-
-    // Skip chunk lookup if no PDFs have been uploaded — saves ~2s per run
-    let contextText = `General SAT content for ${topic} at ${difficulty} level.`;
-    let topChunkId: string | null = null;
-
-    const allChunks = await fetchAllChunks();
-    if (allChunks.length > 0) {
-      // Use gpt-4o-mini for embeddings lookup too (same key, cheaper)
-      const OpenAI = (await import('openai')).default;
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const queryEmbedding = (await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: [`SAT ${topic} ${difficulty} questions ${section}`],
-      })).data[0].embedding;
-
-      const top5 = allChunks
-        .map((c) => ({ ...c, score: cosineSimilarity(queryEmbedding, c.embedding) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5);
-
-      contextText = top5.map((c) => c.content).join('\n\n---\n\n');
-      topChunkId = top5[0]?.id ?? null;
-    }
-
-    const existing = await fetchRagQuestions({ topic, difficulty });
-    const existingPrompts = existing.map((q) => q.prompt);
-
-    const raw = await generateQuestions(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length);
-
-    const novel = dedup(raw).filter(
-      (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
-    );
-
-    const now = Date.now();
-    let saved = 0;
-    for (let i = 0; i < novel.length; i++) {
-      const q = novel[i];
-      if (!q.prompt || !q.choices || !q.correct) continue;
-      await upsertRagQuestion({
-        id: `rag-${topic}-${now}-${i}`,
-        topic: q.topic ?? topic,
-        subtopic: q.subtopic ?? topic,
-        section: q.section ?? section,
-        difficulty: q.difficulty ?? difficulty,
-        passage: q.passage ?? null,
-        prompt: q.prompt,
-        choices: typeof q.choices === 'string' ? q.choices : JSON.stringify(q.choices),
-        correct: q.correct,
-        par_time_sec: (q.parTimeSec as number) ?? 60,
-        explanation: typeof q.explanation === 'string' ? q.explanation : JSON.stringify(q.explanation ?? {}),
-        source_chunk: q.sourceChunk ?? topChunkId,
-        created_at: now,
-      } as RagQuestionRow);
-      saved++;
-    }
-
-    console.log(`[cron-generate] batch ${hourIndex} (${topic}/${difficulty}): saved ${saved}/${raw.length}`);
-    return res.status(200).json({ ok: true, batch: hourIndex, topic, difficulty, saved, total: raw.length });
-
+    await runGeneration(topic, section, difficulty);
   } catch (err) {
-    console.error('[cron-generate] error:', err);
-    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    console.error('[cron-generate] background generation failed:', err);
   }
 }
