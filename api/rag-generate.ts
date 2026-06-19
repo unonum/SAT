@@ -27,7 +27,7 @@ function wordOverlap(a: string, b: string): number {
 function deduplicateQuestions(questions: RawQuestion[]): RawQuestion[] {
   const unique: RawQuestion[] = [];
   for (const q of questions) {
-    const isDupe = unique.some((u) => wordOverlap(u.prompt ?? '', q.prompt ?? '') > 0.8);
+    const isDupe = unique.some((u) => wordOverlap(u.prompt ?? '', q.prompt ?? '') > 0.9);
     if (!isDupe) unique.push(q);
   }
   return unique;
@@ -235,11 +235,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (anthropicQuestions.status === 'fulfilled') rawAll.push(...anthropicQuestions.value);
 
     // Deduplicate within batch AND against existing DB questions
+    // Compare passage+prompt combined so questions with identical prompt stems
+    // but different passages/target words aren't wrongly discarded.
     const dedupedBatch = deduplicateQuestions(rawAll);
-    // Hard filter: discard questions where model put the wrong section
     const sectionCorrect = dedupedBatch.filter((q) => !q.section || q.section === section);
     const deduped = sectionCorrect.filter(
-      (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
+      (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.85)
     );
     const now = Date.now();
 

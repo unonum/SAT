@@ -77,7 +77,7 @@ function parseQuestionsFromText(text: string): RawQuestion[] {
 function dedup(qs: RawQuestion[]): RawQuestion[] {
   const unique: RawQuestion[] = [];
   for (const q of qs) {
-    if (!unique.some((u) => wordOverlap(u.prompt ?? '', q.prompt ?? '') > 0.8)) unique.push(q);
+    if (!unique.some((u) => wordOverlap(u.prompt ?? '', q.prompt ?? '') > 0.9)) unique.push(q);
   }
   return unique;
 }
@@ -199,7 +199,7 @@ async function runGeneration(topic: string, section: string, difficulty: string)
   );
 
   const novel = sectionCorrect.filter(
-    (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.7)
+    (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.85)
   );
 
   const now = Date.now();
