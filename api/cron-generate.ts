@@ -185,7 +185,7 @@ async function runGeneration(topic: string, section: string, difficulty: string)
   }
 
   const existing = await fetchRagQuestions({ topic, difficulty });
-  const existingPrompts = existing.map((q) => q.prompt);
+  const existingFingerprints = existing.map((q) => `${q.passage ?? ''} ${q.prompt}`.trim());
 
     // gpt-4o-mini for cron: completes in ~5s, fits within cron-job.org's 30s limit.
   // Full quality (gpt-4o + Claude) is reserved for manual generation in the Admin UI.
@@ -198,9 +198,11 @@ async function runGeneration(topic: string, section: string, difficulty: string)
     (q) => !q.section || q.section === section
   );
 
-  const novel = sectionCorrect.filter(
-    (q) => q.prompt && !existingPrompts.some((ep) => wordOverlap(ep, q.prompt!) > 0.85)
-  );
+  const novel = sectionCorrect.filter((q) => {
+    if (!q.prompt) return false;
+    const fp = `${q.passage ?? ''} ${q.prompt}`.trim();
+    return !existingFingerprints.some((ef) => wordOverlap(ef, fp) > 0.85);
+  });
 
   const now = Date.now();
   let saved = 0;
