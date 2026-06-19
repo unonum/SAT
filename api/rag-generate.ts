@@ -222,22 +222,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const existing = await fetchRagQuestions({ topic, difficulty });
 
-    // Generate from both models in parallel
+    // Request extra from each model to cover JSON parse failures and section drops.
+    // Two models × ceil(count×0.75) each → enough buffer to always hit `count` after filtering.
+    const requestCount = Math.ceil(count * 0.75);
     const [openaiQuestions, anthropicQuestions] = await Promise.allSettled([
-      generateWithOpenAI(topic, difficulty, count, section, contextText, existing.length),
-      generateWithAnthropic(topic, difficulty, count, section, contextText, existing.length),
+      generateWithOpenAI(topic, difficulty, requestCount, section, contextText, existing.length),
+      generateWithAnthropic(topic, difficulty, requestCount, section, contextText, existing.length),
     ]);
 
     const rawAll: RawQuestion[] = [];
     if (openaiQuestions.status === 'fulfilled') rawAll.push(...openaiQuestions.value);
     if (anthropicQuestions.status === 'fulfilled') rawAll.push(...anthropicQuestions.value);
 
-    // Deduplicate within batch AND against existing DB questions
-    // Compare passage+prompt combined so questions with identical prompt stems
-    // but different passages/target words aren't wrongly discarded.
     const dedupedBatch = deduplicateQuestions(rawAll);
-    const sectionCorrect = dedupedBatch.filter((q) => !q.section || q.section === section);
-    const deduped = sectionCorrect.filter((q) => !!q.prompt);
+    const deduped = dedupedBatch
+      .filter((q) => !q.section || q.section === section)
+      .filter((q) => !!q.prompt && !!q.choices && !!q.correct)
+      .slice(0, count);  // cap at exactly what was requested
     const now = Date.now();
 
     const saved: RagQuestionRow[] = [];

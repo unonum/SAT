@@ -186,18 +186,13 @@ async function runGeneration(topic: string, section: string, difficulty: string)
 
   const existing = await fetchRagQuestions({ topic, difficulty });
 
-    // gpt-4o-mini for cron: completes in ~5s, fits within cron-job.org's 30s limit.
-  // Full quality (gpt-4o + Claude) is reserved for manual generation in the Admin UI.
-  const raw = await generateWithOpenAI(topic, difficulty, COUNT_PER_BATCH, section, contextText, existing.length);
+  // Request extra to cover JSON parse failures and section drops
+  const raw = await generateWithOpenAI(topic, difficulty, Math.ceil(COUNT_PER_BATCH * 1.5), section, contextText, existing.length);
 
-  const dedupedBatch = dedup(raw);
-
-  // Hard filter: discard any question with the wrong section
-  const sectionCorrect = dedupedBatch.filter(
-    (q) => !q.section || q.section === section
-  );
-
-  const novel = sectionCorrect.filter((q) => !!q.prompt);
+  const novel = dedup(raw)
+    .filter((q) => !q.section || q.section === section)
+    .filter((q) => !!q.prompt && !!q.choices && !!q.correct)
+    .slice(0, COUNT_PER_BATCH);
 
   const now = Date.now();
   let saved = 0;
