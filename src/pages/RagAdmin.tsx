@@ -501,7 +501,7 @@ function LibraryTab() {
         </Card>
       ) : (
         <Card className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="text-xs min-w-[900px] w-full">
             <thead>
               <tr className="text-left text-muted border-b border-[rgb(var(--border))]">
                 <th className="pb-2 pr-3">ID</th>
@@ -529,13 +529,17 @@ function LibraryTab() {
                 }))
                 .sort((a, b) => sortAsc ? a.ts - b.ts : b.ts - a.ts)
                 .map(({ q, ts }) => (
-                <tr key={q.id} className="border-b border-[rgb(var(--border))] last:border-0">
-                  <td className="py-2 pr-3 font-mono text-[10px] text-muted max-w-[100px] truncate">{q.id}</td>
-                  <td className="py-2 pr-3">{q.topic}</td>
-                  <td className="py-2 pr-3 capitalize">{q.difficulty}</td>
-                  <td className="py-2 pr-3 max-w-[250px] truncate">{q.prompt}</td>
-                  <td className="py-2 pr-3 font-mono text-[10px] text-muted truncate max-w-[80px]">
-                    {q.sourceChunk ?? '—'}
+                <tr key={q.id} className="border-b border-[rgb(var(--border))] last:border-0 hover:bg-[rgb(var(--surface-2))]">
+                  <td className="py-2 pr-3 font-mono text-[10px] text-muted">
+                    <span title={q.id} className="cursor-help">{q.id}</span>
+                  </td>
+                  <td className="py-2 pr-3 whitespace-nowrap">{q.topic}</td>
+                  <td className="py-2 pr-3 capitalize whitespace-nowrap">{q.difficulty}</td>
+                  <td className="py-2 pr-3 max-w-[300px] truncate">{q.prompt}</td>
+                  <td className="py-2 pr-3 font-mono text-[10px] text-muted">
+                    {q.sourceChunk
+                      ? <span title={q.sourceChunk} className="cursor-help">{q.sourceChunk}</span>
+                      : <span className="text-muted/40">—</span>}
                   </td>
                   <td className="py-2 pr-3 text-muted whitespace-nowrap">
                     {ts > 0
