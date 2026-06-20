@@ -236,9 +236,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const existing = await fetchRagQuestions({ topic, difficulty });
 
-    // Request extra from each model to cover JSON parse failures and section drops.
-    // Two models × ceil(count×0.75) each → enough buffer to always hit `count` after filtering.
-    const requestCount = Math.ceil(count * 0.75);
+    // Request `count` from each model → 2× total buffer after combining both models.
+    // This ensures we still hit `count` even when needsPassageButHasNone filters some out.
+    const requestCount = count;
     const [openaiQuestions, anthropicQuestions] = await Promise.allSettled([
       generateWithOpenAI(topic, difficulty, requestCount, section, contextText, existing.length),
       generateWithAnthropic(topic, difficulty, requestCount, section, contextText, existing.length),
@@ -249,11 +249,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (anthropicQuestions.status === 'fulfilled') rawAll.push(...anthropicQuestions.value);
 
     const dedupedBatch = deduplicateQuestions(rawAll);
-    const deduped = dedupedBatch
+    const afterBasicFilter = dedupedBatch
       .filter((q) => !q.section || q.section === section)
-      .filter((q) => !!q.prompt && !!q.choices && !!q.correct)
-      .filter((q) => !needsPassageButHasNone(q))  // drop questions that cite a passage that isn't there
-      .slice(0, count);  // cap at exactly what was requested
+      .filter((q) => !!q.prompt && !!q.choices && !!q.correct);
+    // Drop questions that cite a passage that wasn't provided — unanswerable for students.
+    // If ALL questions get dropped by this filter (model consistently failed to include passages),
+    // fall back to keeping them anyway so we always save something.
+    const afterPassageFilter = afterBasicFilter.filter((q) => !needsPassageButHasNone(q));
+    const deduped = (afterPassageFilter.length > 0 ? afterPassageFilter : afterBasicFilter)
+      .slice(0, count);
     const now = Date.now();
 
     const saved: RagQuestionRow[] = [];

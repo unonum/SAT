@@ -212,8 +212,9 @@ export async function generateRagQuestions(
     body: JSON.stringify({ topic, difficulty, count, section }),
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error((err as { error?: string }).error ?? 'Generation failed');
+    const err = await resp.json().catch(() => null);
+    const msg = (err as { error?: string } | null)?.error ?? `Server error ${resp.status}`;
+    throw new Error(msg);
   }
   const data = (await resp.json()) as { questions: RagQuestionRowRaw[] };
   return data.questions.map(rowToQuestion);
